@@ -10,11 +10,22 @@ from ml_collections.config_flags import config_flags
 from ml_collections.config_dict import config_dict
 import uuid
 from socket import gethostname
-import wandb
 import numpy as np
 import absl.flags
 from absl import logging
 import pprint
+
+try:
+    import wandb  # type: ignore
+    _HAS_WANDB = True
+except Exception:
+    wandb = None  # type: ignore
+    _HAS_WANDB = False
+
+
+class _DummyWandbRun:
+    def log(self, *args, **kwargs):
+        return None
 
 
 class Timer(object):
@@ -75,21 +86,25 @@ class WandBLogger(object):
         if self.config.random_delay > 0:
             time.sleep(np.random.uniform(0, self.config.random_delay))
 
-        self.run = wandb.init(
-            reinit=False,
-            config=self._variant,
-            project=self.config.project,
-            group=self.config.group,
-            dir=self.config.output_dir,
-            name=self.config.experiment_id,
-            anonymous=self.config.anonymous,
-            notes=self.config.notes,
-            settings=wandb.Settings(
-                start_method="thread",
-                _disable_stats=True,
-            ),
-            mode='online' if self.config.online else 'offline',
-        )
+        if not _HAS_WANDB:
+            logging.warning("wandb is not installed; WandBLogger will be a no-op.")
+            self.run = _DummyWandbRun()
+        else:
+            self.run = wandb.init(
+                reinit=False,
+                config=self._variant,
+                project=self.config.project,
+                group=self.config.group,
+                dir=self.config.output_dir,
+                name=self.config.experiment_id,
+                anonymous=self.config.anonymous,
+                notes=self.config.notes,
+                settings=wandb.Settings(
+                    start_method="thread",
+                    _disable_stats=True,
+                ),
+                mode='online' if self.config.online else 'offline',
+            )
 
         self._save_video = self.config.save_video
 
@@ -97,6 +112,8 @@ class WandBLogger(object):
         self.run.log(*args, **kwargs)
 
     def log_video(self, data_or_path, caption=None, fps=30, format="mp4", label='video'):
+        if not _HAS_WANDB:
+            return None
         self.log({label: wandb.Video(data_or_path, caption=caption, fps=fps, format=format)})
 
     def save_pickle(self, obj, filename):

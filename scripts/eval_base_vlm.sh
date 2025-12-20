@@ -20,4 +20,5 @@ python run.py \
     --level='hard' \
     --oracle_prob=0 \
     --model_path=$model_path \
+    --load_4bit=True \
     --record=True
