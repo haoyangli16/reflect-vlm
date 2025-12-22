@@ -353,6 +353,8 @@ def main(_):
         "bc_romemo_wb",
         "mcts_romemo",
         "mcts_romemo_wb",
+        "reflect_romemo",
+        "reflect_romemo_wb",
         "expert_romemo_wb",
     }:
         from roboworld.agent.romemo_stack import RoMemoDiscreteConfig, RoMemoStore
@@ -399,10 +401,15 @@ def main(_):
             if FLAGS.agent_type in {"llava", "bc"}:
                 return base_llava_agent
             if FLAGS.agent_type == "reflect":
-                from roboworld.agent.reflect_wrapper import ReflectWrapperAgent, ReflectWrapperConfig
+                from roboworld.agent.reflect_wrapper import (
+                    ReflectWrapperAgent,
+                    ReflectWrapperConfig,
+                )
 
                 cfg = ReflectWrapperConfig(
-                    imagine_future_steps=int(FLAGS.imagine_future_steps) if int(FLAGS.imagine_future_steps) > 0 else 5,
+                    imagine_future_steps=int(FLAGS.imagine_future_steps)
+                    if int(FLAGS.imagine_future_steps) > 0
+                    else 5,
                     camera_name=str(FLAGS.camera_name),
                 )
                 return ReflectWrapperAgent(
@@ -456,10 +463,15 @@ def main(_):
                     shared_store=romemo_store,
                 )
             if FLAGS.agent_type == "reflect_romemo":
-                from roboworld.agent.reflect_wrapper import ReflectWrapperAgent, ReflectWrapperConfig
+                from roboworld.agent.reflect_wrapper import (
+                    ReflectWrapperAgent,
+                    ReflectWrapperConfig,
+                )
 
                 cfg = ReflectWrapperConfig(
-                    imagine_future_steps=int(FLAGS.imagine_future_steps) if int(FLAGS.imagine_future_steps) > 0 else 5,
+                    imagine_future_steps=int(FLAGS.imagine_future_steps)
+                    if int(FLAGS.imagine_future_steps) > 0
+                    else 5,
                     camera_name=str(FLAGS.camera_name),
                 )
                 base = ReflectWrapperAgent(
@@ -488,10 +500,15 @@ def main(_):
                     shared_store=romemo_store,
                 )
             if FLAGS.agent_type == "reflect_romemo_wb":
-                from roboworld.agent.reflect_wrapper import ReflectWrapperAgent, ReflectWrapperConfig
+                from roboworld.agent.reflect_wrapper import (
+                    ReflectWrapperAgent,
+                    ReflectWrapperConfig,
+                )
 
                 cfg = ReflectWrapperConfig(
-                    imagine_future_steps=int(FLAGS.imagine_future_steps) if int(FLAGS.imagine_future_steps) > 0 else 5,
+                    imagine_future_steps=int(FLAGS.imagine_future_steps)
+                    if int(FLAGS.imagine_future_steps) > 0
+                    else 5,
                     camera_name=str(FLAGS.camera_name),
                 )
                 base = ReflectWrapperAgent(

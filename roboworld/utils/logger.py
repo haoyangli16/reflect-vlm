@@ -90,21 +90,21 @@ class WandBLogger(object):
             logging.warning("wandb is not installed; WandBLogger will be a no-op.")
             self.run = _DummyWandbRun()
         else:
-            self.run = wandb.init(
-                reinit=False,
-                config=self._variant,
-                project=self.config.project,
-                group=self.config.group,
-                dir=self.config.output_dir,
-                name=self.config.experiment_id,
-                anonymous=self.config.anonymous,
-                notes=self.config.notes,
-                settings=wandb.Settings(
-                    start_method="thread",
-                    _disable_stats=True,
-                ),
-                mode='online' if self.config.online else 'offline',
-            )
+        self.run = wandb.init(
+            reinit=False,
+            config=self._variant,
+            project=self.config.project,
+            group=self.config.group,
+            dir=self.config.output_dir,
+            name=self.config.experiment_id,
+            anonymous=self.config.anonymous,
+            notes=self.config.notes,
+            settings=wandb.Settings(
+                start_method="thread",
+                _disable_stats=True,
+            ),
+            mode='online' if self.config.online else 'offline',
+        )
 
         self._save_video = self.config.save_video
 
