@@ -21,6 +21,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from roboworld.envs.generator import COLORS as _COLORS
+
 
 def _l2_normalize(v: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     v = v.astype(np.float32, copy=False).reshape(-1)
@@ -45,29 +47,96 @@ def extract_env_state_vec(env) -> np.ndarray:
     """
     Deterministic numeric context embedding using env.get_env_state().
     This is available in this benchmark and is more stable than raw pixels.
-    """
-    st = env.get_env_state()
-    # "joint": (qpos, qvel); "mocap": (mocap_pos, mocap_quat); "eq": (eq_active, eq_data)
-    qpos, qvel = st.get("joint", (None, None))
-    mocap_pos, mocap_quat = st.get("mocap", (None, None))
-    eq_active, eq_data = st.get("eq", (None, None))
 
-    parts: List[np.ndarray] = []
+    IMPORTANT: MuJoCo qpos/qvel/eq arrays change length across different boards.
+    We therefore build a fixed-size embedding.
+    """
+
+    canonical_colors = tuple(_COLORS.keys())
+    robot_dof = int(len(getattr(env, "robot_init_qpos", [])) or 9)
+    action_dim = int(len(getattr(env, "prev_action", np.zeros((8,), dtype=np.float32))) or 8)
+
+    robot_qpos = np.zeros((robot_dof,), dtype=np.float32)
+    robot_qvel = np.zeros((robot_dof,), dtype=np.float32)
+    mocap_pos = np.zeros((3,), dtype=np.float32)
+    mocap_quat = np.zeros((4,), dtype=np.float32)
+    prev_action = np.zeros((action_dim,), dtype=np.float32)
+    curr_path_length = np.zeros((1,), dtype=np.float32)
+
+    try:
+        st = env.get_env_state()
+    except Exception:
+        st = {}
+    qpos, qvel = st.get("joint", (None, None))
+    _mpos, _mquat = st.get("mocap", (None, None))
     if qpos is not None:
-        parts.append(np.asarray(qpos, dtype=np.float32).reshape(-1))
+        v = np.asarray(qpos, dtype=np.float32).reshape(-1)
+        robot_qpos[: min(robot_dof, v.shape[0])] = v[:robot_dof]
     if qvel is not None:
-        parts.append(np.asarray(qvel, dtype=np.float32).reshape(-1))
-    if mocap_pos is not None:
-        parts.append(np.asarray(mocap_pos, dtype=np.float32).reshape(-1))
-    if mocap_quat is not None:
-        parts.append(np.asarray(mocap_quat, dtype=np.float32).reshape(-1))
-    if eq_active is not None:
-        parts.append(np.asarray(eq_active, dtype=np.float32).reshape(-1))
-    if eq_data is not None:
-        parts.append(np.asarray(eq_data, dtype=np.float32).reshape(-1))
-    if not parts:
-        return np.zeros((1,), dtype=np.float32)
-    return np.concatenate(parts, axis=0).astype(np.float32, copy=False)
+        v = np.asarray(qvel, dtype=np.float32).reshape(-1)
+        robot_qvel[: min(robot_dof, v.shape[0])] = v[:robot_dof]
+    if _mpos is not None:
+        v = np.asarray(_mpos, dtype=np.float32).reshape(-1)
+        mocap_pos[: min(3, v.shape[0])] = v[:3]
+    if _mquat is not None:
+        v = np.asarray(_mquat, dtype=np.float32).reshape(-1)
+        mocap_quat[: min(4, v.shape[0])] = v[:4]
+    if "prev_action" in st and st["prev_action"] is not None:
+        v = np.asarray(st["prev_action"], dtype=np.float32).reshape(-1)
+        prev_action[: min(action_dim, v.shape[0])] = v[:action_dim]
+    if "curr_path_length" in st and st["curr_path_length"] is not None:
+        curr_path_length[0] = float(st["curr_path_length"])
+
+    obj_feat_parts: List[np.ndarray] = []
+    peg_colors = list(getattr(env, "peg_colors", []) or [])
+    peg_names = list(getattr(env, "peg_names", []) or [])
+    color_to_body: Dict[str, str] = {}
+    for c, n in zip(peg_colors, peg_names):
+        if isinstance(c, str) and isinstance(n, str):
+            color_to_body[c] = n
+
+    for color in canonical_colors:
+        body = color_to_body.get(str(color))
+        if body is None:
+            obj_feat_parts.append(np.zeros((11,), dtype=np.float32))
+            continue
+        present = 1.0
+        in_hand = 0.0
+        upright = 0.0
+        success = 0.0
+        pos = np.zeros((3,), dtype=np.float32)
+        quat = np.zeros((4,), dtype=np.float32)
+        try:
+            if hasattr(env, "object_is_in_hand"):
+                in_hand = 1.0 if bool(env.object_is_in_hand(body)) else 0.0
+            if hasattr(env, "object_is_upright"):
+                upright = 1.0 if bool(env.object_is_upright(body)) else 0.0
+            if hasattr(env, "object_is_success"):
+                success = 1.0 if bool(env.object_is_success(body)) else 0.0
+            if hasattr(env, "get_body_pos"):
+                p = np.asarray(env.get_body_pos(body), dtype=np.float32).reshape(-1)
+                pos[: min(3, p.shape[0])] = p[:3]
+            if hasattr(env, "get_body_quat"):
+                q = np.asarray(env.get_body_quat(body), dtype=np.float32).reshape(-1)
+                quat[: min(4, q.shape[0])] = q[:4]
+        except Exception:
+            pass
+        obj_feat_parts.append(
+            np.concatenate(
+                [
+                    np.asarray([present, in_hand, upright, success], dtype=np.float32),
+                    pos,
+                    quat,
+                ],
+                axis=0,
+            )
+        )
+
+    return np.concatenate(
+        [robot_qpos, robot_qvel, mocap_pos, mocap_quat, prev_action, curr_path_length]
+        + obj_feat_parts,
+        axis=0,
+    ).astype(np.float32, copy=False)
 
 
 @dataclass(frozen=True)
@@ -208,20 +277,22 @@ class RoMemoAgent:
           - mem_score[action] = sum(sim * weight(outcome))
           - stats[action] with counts and fail_rate for risk penalty
         """
+        # Per-action average score (not a raw sum) to avoid runaway dominance from
+        # repeated near-duplicate memories.
         scores: Dict[str, float] = {}
         stats: Dict[str, Dict[str, Any]] = {}
         for sim, it in zip(sims.tolist(), items):
             if sim < self.cfg.min_sim_threshold:
                 continue
-            w = 1.0 if it.outcome > 0 else -float(self.cfg.lambda_fail)
             a = it.action
-            scores[a] = float(scores.get(a, 0.0) + float(sim) * w)
             st = stats.get(a)
             if st is None:
-                st = {"n": 0, "n_succ": 0, "n_fail": 0, "sim_sum": 0.0}
+                st = {"n": 0, "n_succ": 0, "n_fail": 0, "sim_sum": 0.0, "signed_sim_sum": 0.0}
                 stats[a] = st
             st["n"] += 1
             st["sim_sum"] += float(sim)
+            w = 1.0 if it.outcome > 0 else -float(self.cfg.lambda_fail)
+            st["signed_sim_sum"] += float(sim) * float(w)
             if it.outcome > 0:
                 st["n_succ"] += 1
             else:
@@ -229,7 +300,41 @@ class RoMemoAgent:
         for a, st in stats.items():
             n = max(1, int(st["n"]))
             st["fail_rate"] = float(int(st["n_fail"]) / n)
+            scores[a] = float(st.get("signed_sim_sum", 0.0)) / float(n)
         return scores, stats
+
+    def _feasible_actions(self) -> Optional[set[str]]:
+        try:
+            colors = list(getattr(self.env, "peg_colors", []))
+            names = list(getattr(self.env, "peg_names", []))
+            done_mask: Dict[str, bool] = {}
+            for c, name in zip(colors, names):
+                try:
+                    done_mask[str(c)] = bool(self.env.object_is_success(name))
+                except Exception:
+                    done_mask[str(c)] = False
+
+            body = self.env.get_object_in_hand() if hasattr(self.env, "get_object_in_hand") else None
+            held: Optional[str] = None
+            if body is not None:
+                try:
+                    i = names.index(body)
+                    held = str(colors[i])
+                except Exception:
+                    held = None
+
+            feasible: set[str] = {"done"}
+            if held is None:
+                for c in colors:
+                    if not done_mask.get(str(c), False):
+                        feasible.add(f"pick up {c}")
+            else:
+                feasible.add(f"insert {held}")
+                feasible.add(f"reorient {held}")
+                feasible.add(f"put down {held}")
+            return feasible
+        except Exception:
+            return None
 
     def _choose_action(
         self,
@@ -243,6 +348,12 @@ class RoMemoAgent:
         top_mem = sorted(mem_scores.items(), key=lambda x: x[1], reverse=True)[: int(self.cfg.max_mem_candidates)]
         for a, _s in top_mem:
             cand.add(a)
+
+        feasible = self._feasible_actions()
+        if feasible is not None:
+            cand = {a for a in cand if a in feasible}
+            if not cand:
+                cand = {base_action}
 
         scored: List[Tuple[str, float]] = []
         for a in cand:

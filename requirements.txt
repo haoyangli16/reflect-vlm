@@ -300,6 +300,5 @@ visualization-msgs==4.2.4
 wandb==0.16.2
 wavedrom==2.0.3.post3
 websockets==11.0.3
-xacro==2.0.8
+xacro==2.1.0
 zipp==3.23.0
-

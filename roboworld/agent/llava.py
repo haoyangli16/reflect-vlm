@@ -74,7 +74,17 @@ class LlavaAgent(object):
         stop_str = self.conv.sep if self.conv.sep_style != SeparatorStyle.TWO else self.conv.sep2
         keywords = [stop_str]
         stopping_criteria = KeywordsStoppingCriteria(keywords, self.tokenizer, input_ids)
-        streamer = TextStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True)
+        # Avoid spamming stdout when we request multiple sequences (e.g., MCTS proposals)
+        streamer = None if num_propose_actions and num_propose_actions > 1 else TextStreamer(
+            self.tokenizer, skip_prompt=True, skip_special_tokens=True
+        )
+
+        # transformers doesn't support greedy search with num_return_sequences > 1.
+        # Use beam search to obtain top-K deterministic proposals when temperature == 0.
+        use_beam = (temperature <= 0) and (num_propose_actions and num_propose_actions > 1)
+        num_beams = int(num_propose_actions) if use_beam else 1
+
+        max_new_tokens = 32 if (num_propose_actions and num_propose_actions > 1) else self.max_new_tokens
 
         with torch.inference_mode():
             output_dict = self.model.generate(
@@ -82,7 +92,8 @@ class LlavaAgent(object):
                 images=image_tensor,
                 do_sample=(temperature > 0),
                 temperature=temperature,
-                max_new_tokens=self.max_new_tokens,
+                num_beams=num_beams,
+                max_new_tokens=max_new_tokens,
                 streamer=streamer,
                 use_cache=True,
                 stopping_criteria=[stopping_criteria],
@@ -91,23 +102,31 @@ class LlavaAgent(object):
                 num_return_sequences=num_propose_actions,
             )
 
-        transition_scores = self.model.compute_transition_scores(
-            output_dict.sequences, output_dict.scores, normalize_logits=True
-        )
+        # Fast path for deterministic top-K proposals (beam search): transformers already returns
+        # sequence-level scores.
+        if use_beam and hasattr(output_dict, "sequences_scores") and output_dict.sequences_scores is not None:
+            seq_scores = output_dict.sequences_scores
+        else:
+            transition_scores = self.model.compute_transition_scores(
+                output_dict.sequences, output_dict.scores, normalize_logits=True
+            )
 
-        generated_tokens = output_dict.sequences[:, input_ids.shape[1]:]
-        seq_scores = torch.zeros(len(output_dict.sequences)).to(self.model.device)
-        for i in range(len(transition_scores)):
-            for tok, score in zip(generated_tokens[i], transition_scores[i]):
-                seq_scores[i] += score
-                if tok == self.tokenizer.eos_token_id:
-                    break
+            generated_tokens = output_dict.sequences[:, input_ids.shape[1]:]
+            seq_scores = torch.zeros(len(output_dict.sequences)).to(self.model.device)
+            for i in range(len(transition_scores)):
+                for tok, score in zip(generated_tokens[i], transition_scores[i]):
+                    seq_scores[i] += score
+                    if tok == self.tokenizer.eos_token_id:
+                        break
 
         output_ids = output_dict.sequences
 
         actions_with_scores = [
-            (self.tokenizer.decode(output_ids[i, input_ids.shape[1]:]).strip().split('</s>')[0], s.cpu().item())
-            for i, s in enumerate(seq_scores)
+            (
+                self.tokenizer.decode(output_ids[i, input_ids.shape[1]:]).strip().split('</s>')[0],
+                float(seq_scores[i].detach().cpu().item()),
+            )
+            for i in range(len(output_ids))
         ]
         actions_with_scores.sort(key=lambda x: x[1], reverse=True)        
 

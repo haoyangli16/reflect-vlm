@@ -4,6 +4,7 @@ import fix_triton_import  # noqa: F401
 
 import os
 import time
+import traceback
 import pandas as pd
 from PIL import Image
 
@@ -92,10 +93,15 @@ FLAGS_DEF = define_flags(
     ),
     trace_jsonl=(True, "bool", "Write step/episode traces as JSONL."),
     # MCTS baseline
-    mcts_sims=(30, "integer", "MCTS: number of simulations per step."),
+    mcts_sims=(50, "integer", "MCTS: number of simulations per step."),
     mcts_depth=(2, "integer", "MCTS: max tree depth."),
-    mcts_rollout_depth=(3, "integer", "MCTS: rollout depth."),
-    mcts_c_uct=(1.4, "float", "MCTS: UCT exploration constant."),
+    mcts_rollout_depth=(20, "integer", "MCTS: expert rollout cap (steps)."),
+    mcts_c_uct=(0.5, "float", "MCTS: UCT exploration constant."),
+    mcts_proposal_observation=(
+        "root",
+        "string",
+        "MCTS: proposal observation source: 'root' (fast) or 'node' (slow, renders per sim).",
+    ),
     logging=WandBLogger.get_default_config(),
 )
 
@@ -277,6 +283,9 @@ def main(_):
         "llava",
         "bc",
         "mcts",
+        "reflect",
+        "reflect_romemo",
+        "reflect_romemo_wb",
         "expert",
         "random",
         "expert_romemo_wb",
@@ -289,7 +298,7 @@ def main(_):
     }
     assert FLAGS.agent_type in supported, f"Unknown agent type `{FLAGS.agent_type}`"
     assert FLAGS.level in {"medium", "hard", "all"}, f"Unknown assembly level `{FLAGS.level}`"
-    if FLAGS.revise_action:
+    if FLAGS.revise_action and not str(FLAGS.agent_type).startswith("reflect"):
         from roboworld.agent.diffuser import DiffusionSim
 
         assert FLAGS.agent_type in {
@@ -314,6 +323,12 @@ def main(_):
     if FLAGS.agent_type in {
         "llava",
         "bc",
+        "mcts",
+        "reflect",
+        "reflect_romemo",
+        "reflect_romemo_wb",
+        "mcts_romemo",
+        "mcts_romemo_wb",
         "llava_romemo",
         "llava_romemo_wb",
         "bc_romemo",
@@ -383,9 +398,28 @@ def main(_):
         def build_agent_for_env():
             if FLAGS.agent_type in {"llava", "bc"}:
                 return base_llava_agent
+            if FLAGS.agent_type == "reflect":
+                from roboworld.agent.reflect_wrapper import ReflectWrapperAgent, ReflectWrapperConfig
+
+                cfg = ReflectWrapperConfig(
+                    imagine_future_steps=int(FLAGS.imagine_future_steps) if int(FLAGS.imagine_future_steps) > 0 else 5,
+                    camera_name=str(FLAGS.camera_name),
+                )
+                return ReflectWrapperAgent(
+                    env=env,
+                    base_agent=base_llava_agent,
+                    obj_labels=env_info["peg_labels_shuffled"],
+                    cfg=cfg,
+                )
             if FLAGS.agent_type == "mcts":
                 return MCTSAgent(
                     env=env,
+                    proposer_agent=base_llava_agent,
+                    oracle_agent=oracle_agent,
+                    obj_labels=env_info["peg_labels_shuffled"],
+                    camera_name=str(FLAGS.camera_name),
+                    proposal_k=5,
+                    proposal_observation=str(FLAGS.mcts_proposal_observation),
                     seed=int(FLAGS.agent_seed),
                     num_simulations=int(FLAGS.mcts_sims),
                     max_depth=int(FLAGS.mcts_depth),
@@ -421,6 +455,28 @@ def main(_):
                     seed=int(FLAGS.agent_seed),
                     shared_store=romemo_store,
                 )
+            if FLAGS.agent_type == "reflect_romemo":
+                from roboworld.agent.reflect_wrapper import ReflectWrapperAgent, ReflectWrapperConfig
+
+                cfg = ReflectWrapperConfig(
+                    imagine_future_steps=int(FLAGS.imagine_future_steps) if int(FLAGS.imagine_future_steps) > 0 else 5,
+                    camera_name=str(FLAGS.camera_name),
+                )
+                base = ReflectWrapperAgent(
+                    env=env,
+                    base_agent=base_llava_agent,
+                    obj_labels=env_info["peg_labels_shuffled"],
+                    cfg=cfg,
+                )
+                return RoMemoDiscreteAgent(
+                    base_agent=base,
+                    env=env,
+                    task="assembly",
+                    cfg=romemo_cfg,
+                    writeback=False,
+                    seed=int(FLAGS.agent_seed),
+                    shared_store=romemo_store,
+                )
             if FLAGS.agent_type in {"llava_romemo_wb", "bc_romemo_wb"}:
                 return RoMemoDiscreteAgent(
                     base_agent=base_llava_agent,
@@ -431,9 +487,37 @@ def main(_):
                     seed=int(FLAGS.agent_seed),
                     shared_store=romemo_store,
                 )
+            if FLAGS.agent_type == "reflect_romemo_wb":
+                from roboworld.agent.reflect_wrapper import ReflectWrapperAgent, ReflectWrapperConfig
+
+                cfg = ReflectWrapperConfig(
+                    imagine_future_steps=int(FLAGS.imagine_future_steps) if int(FLAGS.imagine_future_steps) > 0 else 5,
+                    camera_name=str(FLAGS.camera_name),
+                )
+                base = ReflectWrapperAgent(
+                    env=env,
+                    base_agent=base_llava_agent,
+                    obj_labels=env_info["peg_labels_shuffled"],
+                    cfg=cfg,
+                )
+                return RoMemoDiscreteAgent(
+                    base_agent=base,
+                    env=env,
+                    task="assembly",
+                    cfg=romemo_cfg,
+                    writeback=True,
+                    seed=int(FLAGS.agent_seed),
+                    shared_store=romemo_store,
+                )
             if FLAGS.agent_type == "mcts_romemo":
                 base = MCTSAgent(
                     env=env,
+                    proposer_agent=base_llava_agent,
+                    oracle_agent=oracle_agent,
+                    obj_labels=env_info["peg_labels_shuffled"],
+                    camera_name=str(FLAGS.camera_name),
+                    proposal_k=5,
+                    proposal_observation=str(FLAGS.mcts_proposal_observation),
                     seed=int(FLAGS.agent_seed),
                     num_simulations=int(FLAGS.mcts_sims),
                     max_depth=int(FLAGS.mcts_depth),
@@ -452,6 +536,12 @@ def main(_):
             if FLAGS.agent_type == "mcts_romemo_wb":
                 base = MCTSAgent(
                     env=env,
+                    proposer_agent=base_llava_agent,
+                    oracle_agent=oracle_agent,
+                    obj_labels=env_info["peg_labels_shuffled"],
+                    camera_name=str(FLAGS.camera_name),
+                    proposal_k=5,
+                    proposal_observation=str(FLAGS.mcts_proposal_observation),
                     seed=int(FLAGS.agent_seed),
                     num_simulations=int(FLAGS.mcts_sims),
                     max_depth=int(FLAGS.mcts_depth),
@@ -550,8 +640,8 @@ def main(_):
                         else:
                             base_act_list[t] = agent_action
 
-                        # reflect and revise action
-                        if FLAGS.revise_action:
+                        # reflect and revise action (handled internally for reflect* agents)
+                        if FLAGS.revise_action and not str(FLAGS.agent_type).startswith("reflect"):
                             assert FLAGS.imagine_future_steps > 0
 
                             if diffusion_sim is None:
@@ -605,7 +695,8 @@ def main(_):
                     print("A:", agent_action)
 
                     # process revised action
-                    assert FLAGS.revise_action == (agent_action_revised is not None)
+                    if not str(FLAGS.agent_type).startswith("reflect"):
+                        assert FLAGS.revise_action == (agent_action_revised is not None)
                     if agent_action_revised is not None:
                         try:
                             assert len(agent_action_revised.strip().split(" ")) <= 3, (
@@ -705,7 +796,7 @@ def main(_):
                         _jsonl_append(step_trace_path, st)
 
                 except Exception as e:
-                    print(e)
+                    print(traceback.format_exc())
                     if rollout_t is None:
                         if rollout_t0 is None:
                             rollout_t = 0

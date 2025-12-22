@@ -9,6 +9,30 @@
 # Notes:
 # - This script defaults to the same 100-task protocol as the provided eval scripts.
 # - You can override NUM_TRAJS, SAVE_ROOT, etc by exporting env vars.
+# MuJoCo EGL rendering (for headless servers without display)
+export MUJOCO_GL=egl 
+export PYOPENGL_PLATFORM=egl
+
+# Fix for LLVM command-line option conflict between triton and bitsandbytes
+export TRITON_PTXAS_PATH=""
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+
+# Critical: Add NVIDIA library path so PyTorch can find CUDA
+export LD_LIBRARY_PATH=/usr/local/nvidia/lib64:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+
+# Force bitsandbytes to use CUDA 11.7 libraries (matching PyTorch cu117)
+export BNB_CUDA_VERSION=117
+
+# Performance optimizations
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+export TRANSFORMERS_VERBOSITY=error  # Reduce transformers logging
+export TOKENIZERS_PARALLELISM=false  # Avoid tokenizer warnings
+
+# Use HuggingFace mirror for China (better than unstable proxy)
+export HF_ENDPOINT=https://hf-mirror.com
+
+# Disable WandB (too slow)
+export WANDB_MODE=disabled
 
 set -euo pipefail
 
