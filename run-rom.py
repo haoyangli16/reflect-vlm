@@ -92,6 +92,7 @@ FLAGS_DEF = define_flags(
         "RoMemo: optional path to save MemoryBank .pt at end.",
     ),
     trace_jsonl=(True, "bool", "Write step/episode traces as JSONL."),
+    save_images=(True, "bool", "Save trajectory images to disk."),
     # MCTS baseline
     mcts_sims=(50, "integer", "MCTS: number of simulations per step."),
     mcts_depth=(2, "integer", "MCTS: max tree depth."),
@@ -844,9 +845,10 @@ def main(_):
 
             traj_key_frames.append(last_img)
             last_img_path = os.path.join(traj_dir, f"{len(question_list)}.png")
-            Image.fromarray(last_img).save(last_img_path)
             goal_img_path = os.path.join(traj_dir, "goal.png")
-            Image.fromarray(goal_img).save(goal_img_path)
+            if FLAGS.save_images:
+                Image.fromarray(last_img).save(last_img_path)
+                Image.fromarray(goal_img).save(goal_img_path)
 
             # log data
             print("Success:", traj_succ)
@@ -875,7 +877,8 @@ def main(_):
 
             for i, question in enumerate(question_list):
                 img_path = os.path.join(traj_dir, f"{i}.png")
-                Image.fromarray(traj_key_frames[i]).save(img_path)
+                if FLAGS.save_images:
+                    Image.fromarray(traj_key_frames[i]).save(img_path)
 
                 entry = {
                     "trajectory_id": traj_id,
