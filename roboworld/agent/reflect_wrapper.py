@@ -55,6 +55,12 @@ class ReflectWrapperAgent:
         self.cfg = cfg or ReflectWrapperConfig()
         self.candidate_act_list = ["pick up", "put down", "insert", "reorient"]
 
+    def encode_image(self, image):
+        """Delegate visual encoding to the underlying base agent."""
+        if hasattr(self.base_agent, "encode_image"):
+            return self.base_agent.encode_image(image)
+        raise NotImplementedError("Base agent does not support encode_image")
+
     def _imagine_with_sim(
         self,
         *,

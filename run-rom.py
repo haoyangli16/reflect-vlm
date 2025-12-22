@@ -333,6 +333,7 @@ def main(_):
         "llava_romemo_wb",
         "bc_romemo",
         "bc_romemo_wb",
+        "expert_romemo_wb",  # Added: Expert needs vision encoder for memory generation
     }:
         from roboworld.agent.llava import LlavaAgent
 
@@ -436,13 +437,19 @@ def main(_):
             if FLAGS.agent_type == "expert_romemo_wb":
                 # Wrap oracle policy so it fits base_agent.act(...) interface
                 class _OracleBase:
-                    def __init__(self, oa):
+                    def __init__(self, oa, encoder_agent):
                         self.oa = oa
+                        self.encoder_agent = encoder_agent
 
                     def act(self, img, goal_img, inp, next_image=None):
                         return self.oa.act(img, goal_img, inp)
 
-                base = _OracleBase(oracle_agent)
+                    def encode_image(self, image):
+                        if self.encoder_agent and hasattr(self.encoder_agent, "encode_image"):
+                            return self.encoder_agent.encode_image(image)
+                        raise NotImplementedError("Encoder agent missing or does not support encode_image")
+
+                base = _OracleBase(oracle_agent, base_llava_agent)
                 return RoMemoDiscreteAgent(
                     base_agent=base,
                     env=env,
