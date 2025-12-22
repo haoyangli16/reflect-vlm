@@ -331,7 +331,7 @@ class RoMemoDiscreteAgent:
 
         feasible = self._feasible_actions()
         if feasible is not None:
-            cand = {a for a in cand if a in feasible}
+            cand = {a for a in cand if a in feasible or a == str(base_action)}
             if not cand:
                 cand = {str(base_action)}
 

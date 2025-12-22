@@ -195,6 +195,13 @@ class MCTSAgent:
         self._vlm_calls: int = 0
         self._render_calls: int = 0
 
+    def encode_image(self, image):
+        """Delegate visual encoding to the underlying VLM proposer agent."""
+        if self.proposer_agent and hasattr(self.proposer_agent, "encode_image"):
+            return self.proposer_agent.encode_image(image)
+        # Fallback if proposer doesn't support it (e.g. random agent)
+        raise NotImplementedError("MCTS proposer_agent does not support encode_image")
+
     def _simulate_action(self, action: str) -> int:
         if action == "done":
             return 0
