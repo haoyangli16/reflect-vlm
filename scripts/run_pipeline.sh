@@ -1,5 +1,11 @@
 #!/bin/bash
-set -e  # Exit on error
+set -e  # Exit immediately if any command fails
+
+# Step 0: Generate Expert Data (The heavy lifting)
+# This uses the parallel script to generate ~4500 trajectories.
+# It will block here until all parallel jobs are finished.
+echo "Step 0: Generating Expert Data (this may take hours)..."
+bash scripts/step0_generate_expert_data.sh
 
 # Step 1: Create subsets from the raw expert data generated in Step 0
 echo "Step 1: Creating memory subsets..."
@@ -15,3 +21,5 @@ INIT_MEMORY_PATH="data/three_pillars/memory_subsets/mem_100.pt" \
   bash scripts/pillar1_universality.sh
 
 echo "Pipeline complete. Check logs and wandb for results."
+
+
