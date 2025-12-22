@@ -164,7 +164,7 @@ def _dist_to_sim(dist: float, eps: float = 1e-6) -> float:
     # Retriever returns L2 distances. Convert to a similarity-like weight.
     s = 1.0 / (float(dist) + float(eps))
     # Prevent extreme dominance when dist==0 (identical state).
-    return float(min(1000.0, s))
+    return float(min(100.0, s))
 
 
 @dataclass(frozen=True)
@@ -335,10 +335,16 @@ class RoMemoDiscreteAgent:
             if not cand:
                 cand = {str(base_action)}
 
+        # Normalize memory scores to [0, 1] to prevent overpowering base_prior
+        raw_mem_scores = {a: float(scores.get(a, 0.0)) for a in cand}
+        max_mem = max(raw_mem_scores.values()) if raw_mem_scores else 1.0
+        if max_mem < 1e-6:
+            max_mem = 1.0
+
         ranked: List[Tuple[str, float]] = []
         for a in cand:
             base_prior = 1.0 if a == str(base_action) else 0.0
-            mem = float(scores.get(a, 0.0))
+            mem = raw_mem_scores[a] / max_mem
             fail_rate = float(stats.get(a, {}).get("fail_rate", 0.0))
             rep = int(self.store.repeat_fail_counts.get((ctx_hash, a), 0))
             risk = float(self.cfg.beta_failrate) * fail_rate + float(self.cfg.beta_repeat) * float(
@@ -348,7 +354,7 @@ class RoMemoDiscreteAgent:
 
             # HACK: Penalize "done" if base agent didn't propose it
             if a == "done" and str(base_action) != "done":
-                s-=10 # massive penalty
+                s -= 10  # massive penalty
             ranked.append((a, s))
         ranked.sort(key=lambda x: x[1], reverse=True)
         chosen = ranked[0][0] if ranked else str(base_action)
