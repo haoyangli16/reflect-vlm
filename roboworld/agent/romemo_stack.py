@@ -53,8 +53,7 @@ def extract_env_state_vec(env) -> np.ndarray:
     canonical_colors = tuple(_COLORS.keys())
 
     robot_dof = int(len(getattr(env, "robot_init_qpos", [])) or 9)
-    action_dim = int(
-        len(getattr(env, "prev_action", np.zeros((8,), dtype=np.float32))) or 8)
+    action_dim = int(len(getattr(env, "prev_action", np.zeros((8,), dtype=np.float32))) or 8)
 
     # Defaults (fixed size)
     robot_qpos = np.zeros((robot_dof,), dtype=np.float32)
@@ -205,6 +204,15 @@ class RoMemoDiscreteAgent:
         self.cfg = cfg or RoMemoDiscreteConfig()
         self.writeback_enabled = bool(writeback)
 
+        # Check if base agent supports visual encoding
+        self.use_vision = hasattr(base_agent, "encode_image") and callable(
+            getattr(base_agent, "encode_image", None)
+        )
+        if self.use_vision:
+            print("[RoMemo] Vision-based retrieval enabled (using VLM encoder).")
+        else:
+            print("[RoMemo] Fallback to state-based retrieval.")
+
         self.store = shared_store or RoMemoStore(
             task=self.task,
             cfg=self.cfg,
@@ -281,7 +289,9 @@ class RoMemoDiscreteAgent:
                 except Exception:
                     done_mask[str(c)] = False
 
-            body = self.env.get_object_in_hand() if hasattr(self.env, "get_object_in_hand") else None
+            body = (
+                self.env.get_object_in_hand() if hasattr(self.env, "get_object_in_hand") else None
+            )
             held: Optional[str] = None
             if body is not None:
                 try:
@@ -339,10 +349,24 @@ class RoMemoDiscreteAgent:
         return chosen, ranked, top_mem
 
     def act(self, img, goal_img, inp, next_image=None):
-        # context
-        raw = extract_env_state_vec(self.env)
-        state_vec = _l2_normalize(raw)
-        ctx_hash = state_hash_from_vec(raw, quant=self.cfg.quant_for_hash)
+        # context embedding: use vision if available, else fallback to state
+        if self.use_vision:
+            try:
+                # Use VLM's visual encoder
+                raw = self.base_agent.encode_image(img)
+                state_vec = _l2_normalize(raw)  # safe to normalize again
+                ctx_hash = state_hash_from_vec(raw, quant=self.cfg.quant_for_hash)
+            except Exception as e:
+                print(f"[RoMemo] Warning: encode_image failed ({e}), fallback to state-based")
+                raw = extract_env_state_vec(self.env)
+                state_vec = _l2_normalize(raw)
+                ctx_hash = state_hash_from_vec(raw, quant=self.cfg.quant_for_hash)
+        else:
+            # Fallback to state vectors
+            raw = extract_env_state_vec(self.env)
+            state_vec = _l2_normalize(raw)
+            ctx_hash = state_hash_from_vec(raw, quant=self.cfg.quant_for_hash)
+
         self._last_context_hash = ctx_hash
 
         # base proposal

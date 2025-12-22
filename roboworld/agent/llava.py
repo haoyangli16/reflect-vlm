@@ -4,7 +4,12 @@ from PIL import Image
 from transformers import TextStreamer
 import numpy as np
 
-from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
+from llava.constants import (
+    IMAGE_TOKEN_INDEX,
+    DEFAULT_IMAGE_TOKEN,
+    DEFAULT_IM_START_TOKEN,
+    DEFAULT_IM_END_TOKEN,
+)
 from llava.conversation import conv_templates, SeparatorStyle
 from llava.model.builder import load_pretrained_model
 from llava.utils import disable_torch_init
@@ -13,18 +18,27 @@ from llava.mm_utils import process_images
 
 
 class LlavaAgent(object):
-
-    def __init__(self, model_path, model_base=None, load_8bit=False, load_4bit=False,
-                 temperature=0.2, max_new_tokens=1024, conv_mode=None, debug=False):
+    def __init__(
+        self,
+        model_path,
+        model_base=None,
+        load_8bit=False,
+        load_4bit=False,
+        temperature=0.2,
+        max_new_tokens=1024,
+        conv_mode=None,
+        debug=False,
+    ):
         disable_torch_init()
         model_name = get_model_name_from_path(model_path)
         print(model_name)
         self.tokenizer, self.model, self.image_processor, self.context_len = load_pretrained_model(
-            model_path, model_base, model_name, load_8bit, load_4bit)
+            model_path, model_base, model_name, load_8bit, load_4bit
+        )
         print(self.model)
         print(self.model.generation_config)
 
-        if 'llama-2' in model_name.lower():
+        if "llama-2" in model_name.lower():
             _conv_mode = "llava_llama_2"
         elif "v1" in model_name.lower():
             _conv_mode = "llava_v1"
@@ -34,8 +48,10 @@ class LlavaAgent(object):
             _conv_mode = "llava_v0"
 
         if conv_mode is not None and _conv_mode != conv_mode:
-            print(f'[WARNING] the auto inferred conversation mode is {_conv_mode}, '
-                  f'while parameter `conv_mode` is {conv_mode}, using {conv_mode}')
+            print(
+                f"[WARNING] the auto inferred conversation mode is {_conv_mode}, "
+                f"while parameter `conv_mode` is {conv_mode}, using {conv_mode}"
+            )
         else:
             conv_mode = _conv_mode
 
@@ -49,7 +65,69 @@ class LlavaAgent(object):
     def init_conv(self):
         self.conv = conv_templates[self.conv_mode].copy()
 
-    def act(self, image, goal_image, inp, next_image=None, num_propose_actions=1, return_score=False, temperature=0):
+    def encode_image(self, image):
+        """
+        Extract visual feature vector for memory retrieval.
+        Returns a normalized numpy array suitable for cosine similarity.
+
+        Args:
+            image: PIL Image or numpy array (H, W, 3)
+
+        Returns:
+            np.ndarray: normalized feature vector (dim=vision_hidden_size)
+        """
+        # 1. Preprocess
+        if isinstance(image, np.ndarray):
+            image = Image.fromarray(image)
+
+        # 2. To tensor (single image)
+        image_tensor = process_images([image], self.image_processor, self.model.config)
+        if type(image_tensor) is list:
+            image_tensor = [img.to(self.model.device, dtype=torch.float16) for img in image_tensor]
+        else:
+            image_tensor = image_tensor.to(self.model.device, dtype=torch.float16)
+
+        # 3. Forward through vision tower only
+        with torch.inference_mode():
+            vision_tower = self.model.get_vision_tower()
+            if vision_tower is None:
+                raise RuntimeError("Vision tower not initialized")
+
+            # image_tensor can be list or tensor; handle both
+            if isinstance(image_tensor, list):
+                img_t = image_tensor[0]
+            else:
+                img_t = image_tensor
+
+            # Ensure proper shape: vision tower expects [batch, C, H, W]
+            if img_t.ndim == 3:
+                img_t = img_t.unsqueeze(0)
+            elif img_t.ndim == 5:
+                # Sometimes process_images returns [1, num_images, C, H, W]
+                img_t = img_t.squeeze(0)
+
+            # Forward pass
+            image_features = vision_tower(img_t)
+            # image_features shape: [batch, num_patches, hidden_size]
+
+            # 4. Global pooling (average over patches)
+            global_feature = torch.mean(image_features, dim=1).squeeze()  # [hidden_size]
+
+            # 5. L2 normalize for cosine similarity
+            global_feature = torch.nn.functional.normalize(global_feature, p=2, dim=0)
+
+        return global_feature.detach().cpu().numpy().astype(np.float32)
+
+    def act(
+        self,
+        image,
+        goal_image,
+        inp,
+        next_image=None,
+        num_propose_actions=1,
+        return_score=False,
+        temperature=0,
+    ):
         self.init_conv()
         if isinstance(image, np.ndarray):
             image = Image.fromarray(image)
@@ -57,10 +135,15 @@ class LlavaAgent(object):
                 goal_image = Image.fromarray(goal_image)
             if next_image is not None:
                 next_image = Image.fromarray(next_image)
-        image_tensor = process_images([goal_image, image] if next_image is None else [goal_image, image, next_image], 
-                                      self.image_processor, self.model.config)
+        image_tensor = process_images(
+            [goal_image, image] if next_image is None else [goal_image, image, next_image],
+            self.image_processor,
+            self.model.config,
+        )
         if type(image_tensor) is list:
-            image_tensor = [image.to(self.model.device, dtype=torch.float16) for image in image_tensor]
+            image_tensor = [
+                image.to(self.model.device, dtype=torch.float16) for image in image_tensor
+            ]
         else:
             image_tensor = image_tensor.to(self.model.device, dtype=torch.float16)
             if image_tensor.ndim == 4:
@@ -70,13 +153,19 @@ class LlavaAgent(object):
         self.conv.append_message(self.conv.roles[1], None)
         prompt = self.conv.get_prompt()
 
-        input_ids = tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0).cuda()
+        input_ids = (
+            tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt")
+            .unsqueeze(0)
+            .cuda()
+        )
         stop_str = self.conv.sep if self.conv.sep_style != SeparatorStyle.TWO else self.conv.sep2
         keywords = [stop_str]
         stopping_criteria = KeywordsStoppingCriteria(keywords, self.tokenizer, input_ids)
         # Avoid spamming stdout when we request multiple sequences (e.g., MCTS proposals)
-        streamer = None if num_propose_actions and num_propose_actions > 1 else TextStreamer(
-            self.tokenizer, skip_prompt=True, skip_special_tokens=True
+        streamer = (
+            None
+            if num_propose_actions and num_propose_actions > 1
+            else TextStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True)
         )
 
         # transformers doesn't support greedy search with num_return_sequences > 1.
@@ -84,7 +173,9 @@ class LlavaAgent(object):
         use_beam = (temperature <= 0) and (num_propose_actions and num_propose_actions > 1)
         num_beams = int(num_propose_actions) if use_beam else 1
 
-        max_new_tokens = 32 if (num_propose_actions and num_propose_actions > 1) else self.max_new_tokens
+        max_new_tokens = (
+            32 if (num_propose_actions and num_propose_actions > 1) else self.max_new_tokens
+        )
 
         with torch.inference_mode():
             output_dict = self.model.generate(
@@ -104,14 +195,18 @@ class LlavaAgent(object):
 
         # Fast path for deterministic top-K proposals (beam search): transformers already returns
         # sequence-level scores.
-        if use_beam and hasattr(output_dict, "sequences_scores") and output_dict.sequences_scores is not None:
+        if (
+            use_beam
+            and hasattr(output_dict, "sequences_scores")
+            and output_dict.sequences_scores is not None
+        ):
             seq_scores = output_dict.sequences_scores
         else:
             transition_scores = self.model.compute_transition_scores(
                 output_dict.sequences, output_dict.scores, normalize_logits=True
             )
 
-            generated_tokens = output_dict.sequences[:, input_ids.shape[1]:]
+            generated_tokens = output_dict.sequences[:, input_ids.shape[1] :]
             seq_scores = torch.zeros(len(output_dict.sequences)).to(self.model.device)
             for i in range(len(transition_scores)):
                 for tok, score in zip(generated_tokens[i], transition_scores[i]):
@@ -123,15 +218,15 @@ class LlavaAgent(object):
 
         actions_with_scores = [
             (
-                self.tokenizer.decode(output_ids[i, input_ids.shape[1]:]).strip().split('</s>')[0],
+                self.tokenizer.decode(output_ids[i, input_ids.shape[1] :]).strip().split("</s>")[0],
                 float(seq_scores[i].detach().cpu().item()),
             )
             for i in range(len(output_ids))
         ]
-        actions_with_scores.sort(key=lambda x: x[1], reverse=True)        
+        actions_with_scores.sort(key=lambda x: x[1], reverse=True)
 
         self.conv.messages[-1][-1] = actions_with_scores[0][0]
-        
+
         if num_propose_actions > 1:
             if return_score:
                 return actions_with_scores
