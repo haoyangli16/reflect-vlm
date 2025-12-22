@@ -80,20 +80,20 @@ def test_romemo_wrapper():
     try:
         # Build mini env
         print("Building test environment...")
-        xml, info = generate_xml(seed=1000000)
-        xml_path = "/tmp/test_romemo_visual.xml"
-        xml.write_to_file(filename=xml_path)
+        # xml, info = generate_xml(seed=1000000)
+        # print(info)
+        # print([info["brick_descriptions"][f"brick_{j + 1}"] for j in range(1, 8)])
+        # exit()
+        # xml_path = "/share/project/lhy/thirdparty/reflect-vlm/roboworld/envs/assets/franka/scene.xml"
+        # xml.write_to_file(filename=xml_path)
 
         env = FrankaAssemblyEnv(
             board_name="brick_1",
             fixture_name=None,
-            peg_names=[f"brick_{j + 1}" for j in range(1, info["n_bodies"])],
-            peg_descriptions=[
-                info["brick_descriptions"][f"brick_{j + 1}"] for j in range(1, info["n_bodies"])
-            ],
+            peg_names=[f"brick_{j + 1}" for j in range(1, 8)],
+            peg_descriptions=['orange block', 'purple block', 'yellow block', 'blue block', 'brown block', 'pink nail', 'red nail'],
             render_mode="offscreen",
             frame_skip=20,
-            model_name=xml_path,
             max_episode_length=50000,
             magic_attaching=True,
         )

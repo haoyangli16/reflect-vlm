@@ -197,22 +197,24 @@ class RoMemoDiscreteAgent:
         writeback: bool = False,
         seed: int = 0,
         shared_store: Optional["RoMemoStore"] = None,
+        use_vision_retrieval: bool = True,
     ):
         self.base_agent = base_agent
         self.env = env
         self.task = str(task)
         self.cfg = cfg or RoMemoDiscreteConfig()
         self.writeback_enabled = bool(writeback)
-
+        self.use_vision = use_vision_retrieval
         # Check if base agent supports visual encoding
-        self.use_vision = hasattr(base_agent, "encode_image") and callable(
-            getattr(base_agent, "encode_image", None)
-        )
+        # self.use_vision = hasattr(base_agent, "encode_image") and callable(
+        #     getattr(base_agent, "encode_image", None)
+        # )
+
         if self.use_vision:
             print("[RoMemo] Vision-based retrieval enabled (using VLM encoder).")
         else:
             print("[RoMemo] Fallback to state-based retrieval.")
-
+            exit(0)
         self.store = shared_store or RoMemoStore(
             task=self.task,
             cfg=self.cfg,
@@ -343,6 +345,10 @@ class RoMemoDiscreteAgent:
                 rep
             )
             s = float(self.cfg.alpha) * base_prior + float(1.0 - self.cfg.alpha) * mem - risk
+
+            # HACK: Penalize "done" if base agent didn't propose it
+            if a == "done" and str(base_action) != "done":
+                s-=10 # massive penalty
             ranked.append((a, s))
         ranked.sort(key=lambda x: x[1], reverse=True)
         chosen = ranked[0][0] if ranked else str(base_action)
