@@ -93,7 +93,9 @@ if [[ "$DO_INIT_MEMORY" != "0" ]]; then
     --imagine_future_steps=5 \
     --record=False \
     --max_steps=$MAX_STEPS \
-    --romemo_save_memory_path="$INIT_MEMORY_PATH"
+    --romemo_save_memory_path="$INIT_MEMORY_PATH" \
+    --model_path='yunhaif/ReflectVLM-llava-v1.5-13b-post-trained' \
+    --load_4bit=True
 fi
 
 if [[ "$DO_RUN" != "0" ]]; then

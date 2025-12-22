@@ -12,7 +12,9 @@ python run-rom.py \
   --romemo_save_memory_path="data/raw_expert_indomain.pt" \
   --level="all" \
   --record=False \
-  --logging.online=False
+  --logging.online=False \
+  --model_path='yunhaif/ReflectVLM-llava-v1.5-13b-post-trained' \
+  --load_4bit=True
 
 # 2. Generate OOD Data (Distractors)
 # HACK: To simulate OOD, we can either:
@@ -32,4 +34,6 @@ python run-rom.py \
   --romemo_save_memory_path="data/raw_expert_ood.pt" \
   --level="all" \
   --record=False \
-  --logging.online=False
+  --logging.online=False \
+  --model_path='yunhaif/ReflectVLM-llava-v1.5-13b-post-trained' \
+  --load_4bit=True
