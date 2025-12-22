@@ -368,6 +368,10 @@ def main(_):
             beta_failrate=float(FLAGS.romemo_beta_failrate),
             beta_repeat=float(FLAGS.romemo_beta_repeat),
             max_mem_candidates=int(FLAGS.romemo_max_mem_candidates),
+            # EXPERT GENERATION FIX:
+            # If we are generating expert data (expert_romemo_wb), we ONLY want successes.
+            # Oracle failures are usually sim noise (false negatives), so we ignore them.
+            write_on_failure=(FLAGS.agent_type != "expert_romemo_wb"),
         )
         romemo_store = RoMemoStore(
             task="assembly",
