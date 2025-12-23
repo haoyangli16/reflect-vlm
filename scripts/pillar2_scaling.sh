@@ -1,7 +1,10 @@
 #!/bin/bash
 # Pillar 2: The Scaling Law - Is memory data the new compute?
 #
-# Setup: Fix Base Policy (bc_romemo). Vary Memory Size.
+# Setup: Fix Base Policy (BC or Reflect). Vary Memory Size.
+# Methods (6 total):
+#   - bc, bc_romemo, bc_romemo_wb
+#   - reflect, reflect_romemo, reflect_romemo_wb
 # Memory Sizes: [0, 10, 50, 100, 500, 1000, 2000]
 #
 # Hypothesis: Logarithmic growth. At N=2000, SR should plateau or slowly rise.
@@ -45,12 +48,9 @@ AGENT_SEEDS=${AGENT_SEEDS:-"0"}
 # Scaling sizes (0 = no memory baseline)
 SCALING_SIZES=${SCALING_SIZES:-"0,10,50,100,500,1000,2000"}
 
-# Fixed method for scaling experiment
-BASE_METHOD="bc"
-ROMEMO_METHOD="bc_romemo"
-
 # Local model paths (default to your local directories)
 BASE_MODEL_PATH="${BASE_MODEL_PATH:-/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-base}"
+POST_MODEL_PATH="${POST_MODEL_PATH:-/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-post-trained}"
 
 IFS=',' read -ra GPU_ARR <<< "$GPUS"
 IFS=',' read -ra SIZES_ARR <<< "$SCALING_SIZES"
@@ -61,7 +61,7 @@ echo "Pillar 2: The Scaling Law"
 echo "=========================================="
 echo "Question: Is memory data the new compute?"
 echo ""
-echo "Method:   $ROMEMO_METHOD (base: $BASE_METHOD)"
+echo "Methods:  bc/bc_romemo/bc_romemo_wb + reflect/reflect_romemo/reflect_romemo_wb"
 echo "Sizes:    ${SIZES_ARR[*]}"
 echo "Test:     $NUM_TRAJS tasks (seed=$TEST_SEED, level=$LEVEL)"
 echo "GPUs:     $GPUS ($NGPU total)"
@@ -70,38 +70,54 @@ echo "=========================================="
 
 mkdir -p "$SAVE_ROOT"
 
-# Build job list: (size, seed)
+# Build job list: (method, size, seed)
+# Convention:
+# - size=0 only runs baselines (bc, reflect)
+# - size>0 runs memory methods (bc_romemo, bc_romemo_wb, reflect_romemo, reflect_romemo_wb)
 jobs=()
 IFS=',' read -ra SEEDS_ARR <<< "${AGENT_SEEDS// /}"
 for seed in "${SEEDS_ARR[@]}"; do
     [[ -z "$seed" ]] && continue
     for size in "${SIZES_ARR[@]}"; do
-        jobs+=("${size}|${seed}")
+        if [[ "$size" == "0" ]]; then
+            jobs+=("bc|${size}|${seed}")
+            jobs+=("reflect|${size}|${seed}")
+        else
+            jobs+=("bc_romemo|${size}|${seed}")
+            jobs+=("bc_romemo_wb|${size}|${seed}")
+            jobs+=("reflect_romemo|${size}|${seed}")
+            jobs+=("reflect_romemo_wb|${size}|${seed}")
+        fi
     done
 done
 
 run_one() {
     local gpu="$1"
-    local size="$2"
-    local seed="$3"
-    
-    RUN_DIR="$SAVE_ROOT/size_${size}/seed_${seed}"
+    local method="$2"
+    local size="$3"
+    local seed="$4"
+
+    RUN_DIR="$SAVE_ROOT/${method}/size_${size}/seed_${seed}"
     mkdir -p "$RUN_DIR"
     
-    echo "[GPU ${gpu}] Running: size=${size} (seed=${seed})..."
-    
-    # size=0 means run base method without memory
-    if [[ "$size" == "0" ]]; then
-        local method="$BASE_METHOD"
-        local mem_path=""
-    else
-        local method="$ROMEMO_METHOD"
-        local mem_path="$MEMORY_SUBSET_DIR/mem_${size}.pt"
-        
+    echo "[GPU ${gpu}] Running: method=${method} size=${size} (seed=${seed})..."
+
+    mem_path=""
+    if [[ "$size" != "0" ]]; then
+        mem_path="$MEMORY_SUBSET_DIR/mem_${size}.pt"
         if [[ ! -f "$mem_path" ]]; then
             echo "ERROR: Memory file not found: $mem_path"
             return 1
         fi
+    fi
+
+    # Select model:
+    # - bc* uses BASE model
+    # - reflect* uses POST-TRAINED model
+    if [[ "$method" == reflect* ]]; then
+        model_path="$POST_MODEL_PATH"
+    else
+        model_path="$BASE_MODEL_PATH"
     fi
     
     CMD="CUDA_VISIBLE_DEVICES=$gpu python run-rom.py \
@@ -118,7 +134,7 @@ run_one() {
         --record=False \
         --max_steps=$MAX_STEPS \
         --agent_seed=$seed \
-        --model_path=\"$BASE_MODEL_PATH\" \
+        --model_path=\"$model_path\" \
         --load_4bit=True"
     
     # Add RoMemo args if using memory
@@ -142,8 +158,8 @@ for gi in "${!GPU_ARR[@]}"; do
     (
         idx="$gi"
         while [[ "$idx" -lt "$njobs" ]]; do
-            IFS='|' read -r size seed <<< "${jobs[$idx]}"
-            run_one "$gpu" "$size" "$seed"
+            IFS='|' read -r method size seed <<< "${jobs[$idx]}"
+            run_one "$gpu" "$method" "$size" "$seed"
             idx=$((idx + NGPU))
         done
     ) &
@@ -177,39 +193,45 @@ from pathlib import Path
 root = Path('$SAVE_ROOT')
 rows = []
 
-for size_dir in sorted(root.iterdir()):
-    if not size_dir.is_dir() or not size_dir.name.startswith('size_'):
+for method_dir in sorted(root.iterdir()):
+    if not method_dir.is_dir():
         continue
-    size = int(size_dir.name.replace('size_', ''))
-    
-    for seed_dir in sorted(size_dir.iterdir()):
-        if not seed_dir.is_dir() or not seed_dir.name.startswith('seed_'):
+    method = method_dir.name
+
+    for size_dir in sorted(method_dir.iterdir()):
+        if not size_dir.is_dir() or not size_dir.name.startswith('size_'):
             continue
-        agent_seed = int(seed_dir.name.replace('seed_', ''))
-        
-        ep_path = seed_dir / 'traces' / 'episode_traces.jsonl'
-        if not ep_path.exists():
-            print(f'  WARN: No traces at {ep_path}')
-            continue
-        
-        eps = [json.loads(ln) for ln in ep_path.read_text().splitlines() if ln.strip()]
-        if len(eps) == 0:
-            continue
-        
-        sr = sum(1 for e in eps if e.get('success')) / len(eps)
-        mean_steps = sum(e.get('steps', 0) for e in eps) / len(eps)
-        looping = sum(e.get('looping_rate', 0) for e in eps) / len(eps)
-        repeat_fail = sum(e.get('repeated_failure_rate', 0) for e in eps) / len(eps)
-        
-        rows.append({
-            'memory_size': size,
-            'agent_seed': agent_seed,
-            'num_episodes': len(eps),
-            'success_rate': sr,
-            'mean_steps': mean_steps,
-            'looping_rate': looping,
-            'repeated_failure_rate': repeat_fail,
-        })
+        size = int(size_dir.name.replace('size_', ''))
+
+        for seed_dir in sorted(size_dir.iterdir()):
+            if not seed_dir.is_dir() or not seed_dir.name.startswith('seed_'):
+                continue
+            agent_seed = int(seed_dir.name.replace('seed_', ''))
+
+            ep_path = seed_dir / 'traces' / 'episode_traces.jsonl'
+            if not ep_path.exists():
+                print(f'  WARN: No traces at {ep_path}')
+                continue
+
+            eps = [json.loads(ln) for ln in ep_path.read_text().splitlines() if ln.strip()]
+            if len(eps) == 0:
+                continue
+
+            sr = sum(1 for e in eps if e.get('success')) / len(eps)
+            mean_steps = sum(e.get('steps', 0) for e in eps) / len(eps)
+            looping = sum(e.get('looping_rate', 0) for e in eps) / len(eps)
+            repeat_fail = sum(e.get('repeated_failure_rate', 0) for e in eps) / len(eps)
+
+            rows.append({
+                'method': method,
+                'memory_size': size,
+                'agent_seed': agent_seed,
+                'num_episodes': len(eps),
+                'success_rate': sr,
+                'mean_steps': mean_steps,
+                'looping_rate': looping,
+                'repeated_failure_rate': repeat_fail,
+            })
 
 df = pd.DataFrame(rows)
 out_dir = root / '_aggregate'
@@ -218,9 +240,9 @@ out_dir.mkdir(exist_ok=True)
 df.to_csv(out_dir / 'scaling_results.csv', index=False)
 print(f'Saved: {out_dir}/scaling_results.csv')
 
-# Summary by size
+# Summary by (method, size)
 if len(df) > 0:
-    summary = df.groupby('memory_size').agg({
+    summary = df.groupby(['method','memory_size']).agg({
         'success_rate': ['mean', 'std'],
         'mean_steps': ['mean', 'std'],
         'looping_rate': ['mean', 'std'],
@@ -252,36 +274,39 @@ if len(df) == 0:
     print('Empty results')
     exit(0)
 
-# Aggregate by memory_size
-agg = df.groupby('memory_size').agg({
+# Aggregate by (method, memory_size)
+agg = df.groupby(['method','memory_size']).agg({
     'success_rate': ['mean', 'std'],
     'mean_steps': ['mean', 'std'],
 }).reset_index()
-agg.columns = ['size', 'sr_mean', 'sr_std', 'steps_mean', 'steps_std']
+agg.columns = ['method','size', 'sr_mean', 'sr_std', 'steps_mean', 'steps_std']
 
 # Plot
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
 
-# Success Rate vs Memory Size
-ax1.errorbar(agg['size'], agg['sr_mean'], yerr=agg['sr_std'], 
-             marker='o', capsize=5, capthick=2, linewidth=2, markersize=8)
+# Success Rate vs Memory Size (one curve per method)
+for method in sorted(agg['method'].unique()):
+    sub = agg[agg['method']==method].sort_values('size')
+    ax1.errorbar(sub['size'], sub['sr_mean'], yerr=sub['sr_std'],
+                 marker='o', capsize=3, linewidth=2, markersize=6, label=method)
 ax1.set_xlabel('Memory Size (# experiences)', fontsize=12)
 ax1.set_ylabel('Success Rate', fontsize=12)
 ax1.set_title('Pillar 2: Scaling Law', fontsize=14)
 ax1.set_xscale('symlog', linthresh=10)  # log scale but handles 0
 ax1.grid(True, alpha=0.3)
-ax1.axhline(agg[agg['size']==0]['sr_mean'].values[0] if 0 in agg['size'].values else 0, 
-            color='red', linestyle='--', alpha=0.5, label='No memory baseline')
 ax1.legend()
 
 # Steps vs Memory Size
-ax2.errorbar(agg['size'], agg['steps_mean'], yerr=agg['steps_std'],
-             marker='s', capsize=5, capthick=2, linewidth=2, markersize=8, color='green')
+for method in sorted(agg['method'].unique()):
+    sub = agg[agg['method']==method].sort_values('size')
+    ax2.errorbar(sub['size'], sub['steps_mean'], yerr=sub['steps_std'],
+                 marker='s', capsize=3, linewidth=2, markersize=6, label=method)
 ax2.set_xlabel('Memory Size (# experiences)', fontsize=12)
 ax2.set_ylabel('Mean Steps to Completion', fontsize=12)
 ax2.set_title('Efficiency vs Memory Size', fontsize=14)
 ax2.set_xscale('symlog', linthresh=10)
 ax2.grid(True, alpha=0.3)
+ax2.legend()
 
 plt.tight_layout()
 
