@@ -41,7 +41,7 @@ MEMORY_SUBSET_DIR=${MEMORY_SUBSET_DIR:-"data/three_pillars/memory_subsets"}
 SAVE_ROOT=${SAVE_ROOT:-"logs/pillar2_scaling"}
 NUM_TRAJS=${NUM_TRAJS:-100}
 LEVEL=${LEVEL:-"all"}
-TEST_SEED=${TEST_SEED:-2000000}
+TEST_SEED=${TEST_SEED:-1000001}
 MAX_STEPS=${MAX_STEPS:-50}
 AGENT_SEEDS=${AGENT_SEEDS:-"0"}
 
@@ -131,6 +131,7 @@ run_one() {
         --agent_type=\"$method\" \
         --level=\"$LEVEL\" \
         --oracle_prob=0 \
+        --save_images=False \
         --record=False \
         --max_steps=$MAX_STEPS \
         --agent_seed=$seed \
