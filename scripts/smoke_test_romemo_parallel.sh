@@ -43,7 +43,6 @@ else
   METHODS_ARR=(
     "bc" "bc_romemo" "bc_romemo_wb"
     "reflect" "reflect_romemo" "reflect_romemo_wb"
-    "mcts" "mcts_romemo" "mcts_romemo_wb"
   )
 fi
 

@@ -150,7 +150,7 @@ for agent_seed in ${AGENT_SEEDS//,/ }; do
     if [[ $method == bc* || $method == mcts* || $method == reflect* ]]; then
       # Use post-trained model (better than base model)
       CMD="$CMD \
-        --model_path='yunhaif/ReflectVLM-llava-v1.5-13b-post-trained' \
+        --model_path='/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-base' \
         --load_4bit=True"
     fi
 

@@ -11,8 +11,9 @@
 # ==========================================
 # Environment Setup (CRITICAL for headless GPU servers)
 # ==========================================
-export MUJOCO_GL=egl 
+# Force EGL
 export PYOPENGL_PLATFORM=egl
+export MUJOCO_GL=egl 
 
 # Fix for LLVM command-line option conflict between triton and bitsandbytes
 export TRITON_PTXAS_PATH=""
@@ -35,14 +36,6 @@ export HF_ENDPOINT=https://hf-mirror.com
 export HF_HOME="${HF_HOME:-/share/project/hf_cache}"
 export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME/transformers}"
 mkdir -p "$HF_HOME" "$TRANSFORMERS_CACHE" 2>/dev/null || true
-
-# ==========================================
-# OFFLINE MODE: Use local cached models (no network)
-# ==========================================
-# Set HF_HUB_OFFLINE=1 to force using local cache only
-# This prevents the stuck "Downloading shards" issue
-export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
-export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
 
 # ==========================================
 # Configuration

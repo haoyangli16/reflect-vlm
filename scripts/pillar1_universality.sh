@@ -13,7 +13,7 @@ if [ ! -f "$INIT_MEMORY_PATH" ]; then
 fi
 
 echo "Running Pillar 1: Universality..."
-export METHODS="bc,bc_romemo,bc_romemo_wb, reflect,reflect_romemo,reflect_romemo_wb, mcts,mcts_romemo,mcts_romemo_wb"
+export METHODS="bc,bc_romemo,bc_romemo_wb, reflect,reflect_romemo,reflect_romemo_wb"
 
 # Run 100 evaluation episodes
 NUM_TRAJS=100 LEVEL="all" bash scripts/smoke_test_romemo_parallel.sh
