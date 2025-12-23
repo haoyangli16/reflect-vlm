@@ -38,7 +38,6 @@ cd "$REFLECT_VLM_ROOT"
 # Configuration
 GPUS=${GPUS:-"0,1,2,3,4,5,6,7"}
 MEMORY_SUBSET_DIR=${MEMORY_SUBSET_DIR:-"data/three_pillars/memory_subsets"}
-SAVE_ROOT=${SAVE_ROOT:-"logs/pillar2_scaling"}
 NUM_TRAJS=${NUM_TRAJS:-100}
 LEVEL=${LEVEL:-"all"}
 TEST_SEED=${TEST_SEED:-1000001}
@@ -47,6 +46,13 @@ AGENT_SEEDS=${AGENT_SEEDS:-"0"}
 
 # Scaling sizes (0 = no memory baseline)
 SCALING_SIZES=${SCALING_SIZES:-"0,10,50,100,500,1000,2000"}
+
+# NEW: Retrieval mode for state-query based retrieval
+RETRIEVAL_MODE=${RETRIEVAL_MODE:-"visual"}
+SYMBOLIC_WEIGHT=${SYMBOLIC_WEIGHT:-0.5}
+
+# Include retrieval mode in output dir
+SAVE_ROOT=${SAVE_ROOT:-"logs/pillar2_scaling_${RETRIEVAL_MODE}"}
 
 # Local model paths (default to your local directories)
 BASE_MODEL_PATH="${BASE_MODEL_PATH:-/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-base}"
@@ -65,6 +71,7 @@ echo "Methods:  bc/bc_romemo/bc_romemo_wb + reflect/reflect_romemo/reflect_romem
 echo "Sizes:    ${SIZES_ARR[*]}"
 echo "Test:     $NUM_TRAJS tasks (seed=$TEST_SEED, level=$LEVEL)"
 echo "GPUs:     $GPUS ($NGPU total)"
+echo "Retrieval: $RETRIEVAL_MODE (symbolic_weight=$SYMBOLIC_WEIGHT)"
 echo "Output:   $SAVE_ROOT"
 echo "=========================================="
 
@@ -142,7 +149,9 @@ run_one() {
     if [[ "$size" != "0" ]]; then
         CMD="$CMD \
             --romemo_init_memory_path=\"$mem_path\" \
-            --romemo_save_memory_path=\"$RUN_DIR/romemo_memory.pt\""
+            --romemo_save_memory_path=\"$RUN_DIR/romemo_memory.pt\" \
+            --romemo_retrieval_mode=\"$RETRIEVAL_MODE\" \
+            --romemo_symbolic_weight=$SYMBOLIC_WEIGHT"
     fi
     
     eval $CMD

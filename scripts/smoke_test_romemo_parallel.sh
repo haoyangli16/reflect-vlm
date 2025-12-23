@@ -22,6 +22,10 @@ cd "$REFLECT_VLM_ROOT"
 export BASE_MODEL_PATH="${BASE_MODEL_PATH:-/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-base}"
 export POST_MODEL_PATH="${POST_MODEL_PATH:-/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-post-trained}"
 
+# NEW: Retrieval mode for state-query based retrieval
+export RETRIEVAL_MODE="${RETRIEVAL_MODE:-visual}"
+export SYMBOLIC_WEIGHT="${SYMBOLIC_WEIGHT:-0.5}"
+
 GPUS=${GPUS:-"0,1,2,3,4,5,6,7"}
 INIT_GPU=${INIT_GPU:-0}
 FORCE_REBUILD_INIT=${FORCE_REBUILD_INIT:-0}

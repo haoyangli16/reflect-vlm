@@ -88,6 +88,22 @@ FLAGS_DEF = define_flags(
         "string",
         "RoMemo: path to save FailureMemory .pt at end.",
     ),
+    # NEW: Retrieval mode for state-query based retrieval
+    romemo_retrieval_mode=(
+        "visual",
+        "string",
+        "RoMemo: retrieval mode - 'visual' (default), 'symbolic', or 'hybrid'.",
+    ),
+    romemo_symbolic_weight=(
+        0.5,
+        "float",
+        "RoMemo: weight for symbolic filtering in hybrid mode (0=visual only, 1=symbolic only).",
+    ),
+    romemo_min_symbolic_candidates=(
+        5,
+        "integer",
+        "RoMemo: minimum candidates from symbolic filter before fallback to visual.",
+    ),
     trace_jsonl=(True, "bool", "Write step/episode traces as JSONL."),
     save_images=(False, "bool", "Save trajectory images to disk."),
     # Focus on failure collection
@@ -372,6 +388,10 @@ def main(_):
             # Key: Write failures only (unless explicitly enabled)
             write_on_failure=True,
             write_on_success=bool(FLAGS.write_on_success),
+            # NEW: Retrieval mode for state-query based retrieval
+            retrieval_mode=str(FLAGS.romemo_retrieval_mode),
+            symbolic_weight=float(FLAGS.romemo_symbolic_weight),
+            min_symbolic_candidates=int(FLAGS.romemo_min_symbolic_candidates),
         )
         romemo_store = RoMemoStore(
             task="assembly",

@@ -51,7 +51,9 @@ export WANDB_SILENT=true
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 DATA_DIR="${PROJECT_ROOT}/data"
-LOGS_DIR="${LOGS_DIR:-${PROJECT_ROOT}/logs/pillar4_constraints_ratio}"
+# Include retrieval mode in output dir so different modes are kept separate
+RETRIEVAL_MODE_FOR_PATH="${RETRIEVAL_MODE:-visual}"
+LOGS_DIR="${LOGS_DIR:-${PROJECT_ROOT}/logs/pillar4_constraints_ratio_${RETRIEVAL_MODE_FOR_PATH}}"
 
 # Create directories
 mkdir -p "${LOGS_DIR}"
@@ -82,6 +84,11 @@ GOOD_RATIOS="${GOOD_RATIOS:-20,40,60,80,100}"  # % good (success) memory; remain
 # Methods to run (all use RoMemo memory input)
 METHODS="${METHODS:-bc_romemo,bc_romemo_wb,reflect_romemo,reflect_romemo_wb}"
 
+# NEW: Retrieval mode for state-query based retrieval
+# Options: "visual" (default, original behavior), "symbolic" (state-query), "hybrid"
+RETRIEVAL_MODE="${RETRIEVAL_MODE:-visual}"
+SYMBOLIC_WEIGHT="${SYMBOLIC_WEIGHT:-0.5}"  # For hybrid mode
+
 IFS=',' read -ra GPU_ARR <<< "$GPUS"
 IFS=',' read -ra METHODS_ARR <<< "$METHODS"
 IFS=',' read -ra RATIOS_ARR <<< "$GOOD_RATIOS"
@@ -99,6 +106,8 @@ echo "Agent seeds:      ${AGENT_SEEDS}"
 echo "Total memory size: ${TOTAL_MEMORY_SIZE}"
 echo "Good ratios (%):   ${GOOD_RATIOS}"
 echo "Methods:          ${METHODS}"
+echo "Retrieval mode:   ${RETRIEVAL_MODE}"  # NEW
+echo "Symbolic weight:  ${SYMBOLIC_WEIGHT}"  # NEW
 echo "Success memory:   ${SUCCESS_MEMORY}"
 echo "Failure memory:   ${FAILURE_MEMORY}"
 echo "Output:           ${LOGS_DIR}"
@@ -259,6 +268,8 @@ run_one() {
         $quant_flag \
         --romemo_init_memory_path="$MIXED_MEMORY" \
         --romemo_save_memory_path="$RUN_DIR/romemo_memory.pt" \
+        --romemo_retrieval_mode="$RETRIEVAL_MODE" \
+        --romemo_symbolic_weight=$SYMBOLIC_WEIGHT \
         --trace_jsonl=True \
         2>&1 | tee "$RUN_DIR/run.log"
 }

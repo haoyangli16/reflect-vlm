@@ -11,6 +11,11 @@ We adapt RoMemo's \"option\" concept to reflect-vlm's discrete action strings:
 
 We treat each decision as an \"option_start\" experience keyed by a deterministic
 numeric state embedding from env.get_env_state().
+
+NEW: Supports state-query based retrieval for better task relevance.
+- Visual retrieval: original behavior, uses image embeddings
+- Symbolic retrieval: filters by discrete task state before ranking
+- Hybrid retrieval: combines both approaches
 """
 
 from __future__ import annotations
@@ -34,6 +39,156 @@ except Exception as e:  # pragma: no cover
         "so `import romemo` works.\n"
         f"Original error: {e}"
     )
+
+
+# =========================================================================
+# Symbolic State Extraction for State-Query Retrieval
+# =========================================================================
+
+
+def extract_symbolic_state(
+    env,
+    proposed_action: str,
+    last_action_success: Optional[bool] = None,
+    last_fail_tag: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Extract discrete symbolic state from the environment.
+
+    This captures the task-relevant state that determines the correct action:
+    - What pieces are inserted (progress)
+    - What the robot is holding
+    - What action type is being attempted
+    - Recent failure context
+
+    Args:
+        env: FrankaAssemblyEnv instance
+        proposed_action: The action being considered (e.g., "insert red")
+        last_action_success: Whether the previous action succeeded
+        last_fail_tag: Failure tag from previous action (if any)
+
+    Returns:
+        Dict with symbolic state fields
+    """
+    # Parse action type from proposed action
+    action_type = "unknown"
+    target_color = None
+    action_str = str(proposed_action).strip().lower()
+
+    if action_str == "done":
+        action_type = "done"
+    elif action_str.startswith("pick up"):
+        action_type = "pick"
+        parts = action_str.split()
+        if len(parts) >= 3:
+            target_color = parts[2]
+    elif action_str.startswith("insert"):
+        action_type = "insert"
+        parts = action_str.split()
+        if len(parts) >= 2:
+            target_color = parts[1]
+    elif action_str.startswith("reorient"):
+        action_type = "reorient"
+        parts = action_str.split()
+        if len(parts) >= 2:
+            target_color = parts[1]
+    elif action_str.startswith("put down"):
+        action_type = "putdown"
+        parts = action_str.split()
+        if len(parts) >= 3:
+            target_color = parts[2]
+
+    # Get holding state
+    is_holding = False
+    holding_piece = None
+    try:
+        body = env.get_object_in_hand() if hasattr(env, "get_object_in_hand") else None
+        if body is not None:
+            is_holding = True
+            # Map body name to color
+            colors = list(getattr(env, "peg_colors", []))
+            names = list(getattr(env, "peg_names", []))
+            try:
+                idx = names.index(body)
+                holding_piece = str(colors[idx])
+            except (ValueError, IndexError):
+                holding_piece = body
+    except Exception:
+        pass
+
+    # Get progress: which pieces are inserted
+    inserted_pieces = []
+    remaining_pieces = []
+    try:
+        colors = list(getattr(env, "peg_colors", []))
+        names = list(getattr(env, "peg_names", []))
+        for c, n in zip(colors, names):
+            try:
+                if env.object_is_success(n):
+                    inserted_pieces.append(str(c))
+                else:
+                    remaining_pieces.append(str(c))
+            except Exception:
+                remaining_pieces.append(str(c))
+    except Exception:
+        pass
+
+    total_pieces = len(inserted_pieces) + len(remaining_pieces)
+    progress = len(inserted_pieces) / total_pieces if total_pieces > 0 else 0.0
+
+    return {
+        "action_type": action_type,
+        "target_color": target_color,
+        "is_holding": is_holding,
+        "holding_piece": holding_piece,
+        "progress": progress,
+        "num_remaining": len(remaining_pieces),
+        "num_inserted": len(inserted_pieces),
+        "inserted_pieces": inserted_pieces,
+        "remaining_pieces": remaining_pieces,
+        "last_action_success": last_action_success,
+        "last_fail_tag": last_fail_tag,
+    }
+
+
+def symbolic_state_matches(
+    query: Dict[str, Any],
+    stored: Dict[str, Any],
+    strict_action_type: bool = True,
+    strict_holding: bool = True,
+) -> bool:
+    """
+    Check if two symbolic states are compatible for retrieval.
+
+    Args:
+        query: The current symbolic state
+        stored: The stored experience's symbolic state
+        strict_action_type: Require exact action type match
+        strict_holding: Require exact holding state match
+
+    Returns:
+        True if states are compatible
+    """
+    if stored is None:
+        return False
+
+    # Must match action type (most important filter)
+    if strict_action_type:
+        if query.get("action_type") != stored.get("action_type"):
+            return False
+
+    # Must match holding state
+    if strict_holding:
+        if query.get("is_holding") != stored.get("is_holding"):
+            return False
+
+    # Progress should be somewhat similar (within ±2 pieces)
+    q_remaining = query.get("num_remaining", 0)
+    s_remaining = stored.get("num_remaining", 0)
+    if abs(q_remaining - s_remaining) > 2:
+        return False
+
+    return True
 
 
 def extract_env_state_vec(env) -> np.ndarray:
@@ -186,12 +341,30 @@ class RoMemoDiscreteConfig:
     write_on_failure: bool = True
     deduplicate: bool = False  # keep repeated evidence; we also keep explicit repeat counters
 
+    # NEW: Retrieval mode for state-query based retrieval
+    # Options:
+    #   "visual" - original behavior, uses image/state embeddings only
+    #   "symbolic" - filters by symbolic state first, then ranks by embedding
+    #   "hybrid" - combines both approaches with weighting
+    retrieval_mode: str = "visual"  # "visual", "symbolic", or "hybrid"
+
+    # For hybrid mode: weight for symbolic filtering (0=visual only, 1=symbolic only)
+    symbolic_weight: float = 0.5
+
+    # Minimum candidates before falling back to visual retrieval
+    min_symbolic_candidates: int = 5
+
 
 class RoMemoDiscreteAgent:
     """
     Base-agent wrapper: retrieval-conditioned rerank + optional writeback.
 
     base_agent.act(img, goal_img, inp, ...) -> action_str
+
+    NEW: Supports multiple retrieval modes:
+    - "visual": original behavior, uses image embeddings
+    - "symbolic": filters by discrete task state before ranking
+    - "hybrid": combines both approaches
     """
 
     def __init__(
@@ -211,16 +384,24 @@ class RoMemoDiscreteAgent:
         self.cfg = cfg or RoMemoDiscreteConfig()
         self.writeback_enabled = bool(writeback)
         self.use_vision = use_vision_retrieval
-        # Check if base agent supports visual encoding
-        # self.use_vision = hasattr(base_agent, "encode_image") and callable(
-        #     getattr(base_agent, "encode_image", None)
-        # )
 
-        if self.use_vision:
-            print("[RoMemo] Vision-based retrieval enabled (using VLM encoder).")
+        # Retrieval mode (from config)
+        self.retrieval_mode = self.cfg.retrieval_mode
+
+        # Log retrieval mode
+        mode_str = self.retrieval_mode
+        if mode_str == "visual":
+            print("[RoMemo] Visual-based retrieval enabled.")
+        elif mode_str == "symbolic":
+            print("[RoMemo] Symbolic state-query retrieval enabled.")
+        elif mode_str == "hybrid":
+            print(
+                f"[RoMemo] Hybrid retrieval enabled (symbolic_weight={self.cfg.symbolic_weight})."
+            )
         else:
-            print("[RoMemo] Fallback to state-based retrieval.")
-            exit(0)
+            print(f"[RoMemo] Unknown retrieval mode '{mode_str}', defaulting to visual.")
+            self.retrieval_mode = "visual"
+
         self.store = shared_store or RoMemoStore(
             task=self.task,
             cfg=self.cfg,
@@ -231,7 +412,11 @@ class RoMemoDiscreteAgent:
         self._pending: Optional[Experience] = None
         self._pending_pred: Optional[bool] = None
         self._last_context_hash: Optional[str] = None
-        # local alias for convenience (repeat counts live in the store for sharing across episodes)
+        self._pending_symbolic_state: Optional[Dict[str, Any]] = None
+
+        # Track last action outcome for symbolic state context
+        self._last_action_success: Optional[bool] = None
+        self._last_fail_tag: Optional[str] = None
 
         # trace payload compatible with run.py logging
         self.last_trace: Dict[str, Any] = {}
@@ -449,8 +634,39 @@ class RoMemoDiscreteAgent:
         # base proposal
         base_action = str(self.base_agent.act(img, goal_img, inp, next_image=next_image)).strip()
 
-        # retrieve
-        ret = self.store.retriever.retrieve(query=state_vec, k=int(self.cfg.k))
+        # NEW: Extract symbolic state for state-query retrieval
+        symbolic_state = None
+        if self.retrieval_mode in ("symbolic", "hybrid"):
+            symbolic_state = extract_symbolic_state(
+                self.env,
+                base_action,
+                last_action_success=self._last_action_success,
+                last_fail_tag=self._last_fail_tag,
+            )
+        self._pending_symbolic_state = symbolic_state
+
+        # Retrieve based on mode
+        if self.retrieval_mode == "symbolic":
+            # Symbolic: filter by discrete state first, then rank by embedding
+            ret = self.store.retriever.retrieve_filtered(
+                query=state_vec,
+                symbolic_state=symbolic_state,
+                k=int(self.cfg.k),
+                fallback_to_visual=True,
+                min_candidates=int(self.cfg.min_symbolic_candidates),
+            )
+        elif self.retrieval_mode == "hybrid":
+            # Hybrid: combine symbolic filtering with visual similarity
+            ret = self.store.retriever.retrieve_hybrid(
+                query=state_vec,
+                symbolic_state=symbolic_state,
+                k=int(self.cfg.k),
+                symbolic_weight=float(self.cfg.symbolic_weight),
+            )
+        else:
+            # Visual: original behavior
+            ret = self.store.retriever.retrieve(query=state_vec, k=int(self.cfg.k))
+
         scores, stats = self._mem_action_scores(ret)
         chosen, ranked, top_mem = self._choose(base_action, scores, stats, ctx_hash)
 
@@ -460,6 +676,7 @@ class RoMemoDiscreteAgent:
             subtask="discrete_action",
             env_id="reflect-vlm",
             state_vec=state_vec.astype(np.float32, copy=False),
+            symbolic_state=symbolic_state,  # NEW: store symbolic state
             strategy_id="romemo_wrapper",
             success=False,
             fail=False,
@@ -475,6 +692,7 @@ class RoMemoDiscreteAgent:
                 "retrieval": {
                     "k": int(self.cfg.k),
                     "n": int(len(ret.experiences)),
+                    "mode": self.retrieval_mode,  # NEW: log retrieval mode
                 },
             },
         )
@@ -491,7 +709,9 @@ class RoMemoDiscreteAgent:
             "base_action": str(base_action),
             "chosen_action": str(chosen),
             "retrieval_k": int(self.cfg.k),
+            "retrieval_mode": self.retrieval_mode,  # NEW
             "memory_size": int(len(self.store.memory)),
+            "symbolic_state": symbolic_state,  # NEW: for debugging
             "retrieved": [
                 {
                     "dist": float(d),
@@ -502,6 +722,12 @@ class RoMemoDiscreteAgent:
                     "fail": bool(e.fail),
                     "fail_tag": getattr(e, "fail_tag", None),
                     "oracle_action": (e.extra_metrics or {}).get("oracle_action", None),
+                    # NEW: Include stored symbolic state for debugging
+                    "symbolic_match": bool(
+                        symbolic_state_matches(symbolic_state, e.symbolic_state)
+                        if symbolic_state and e.symbolic_state
+                        else None
+                    ),
                 }
                 for e, d in zip(ret.experiences, ret.distances.tolist())
             ][:10],
@@ -609,10 +835,15 @@ class RoMemoDiscreteAgent:
             else:
                 self.store.writeback.write(self._pending)
 
+        # NEW: Track last action outcome for next symbolic state extraction
+        self._last_action_success = not fail
+        self._last_fail_tag = inferred_fail_tag if fail else None
+
         # clear pending
         out = {"fail": bool(fail), "fail_tag": inferred_fail_tag}
         self._pending = None
         self._pending_pred = None
+        self._pending_symbolic_state = None
         return out
 
 

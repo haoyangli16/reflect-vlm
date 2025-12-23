@@ -91,6 +91,22 @@ FLAGS_DEF = define_flags(
         "string",
         "RoMemo: optional path to save MemoryBank .pt at end.",
     ),
+    # NEW: Retrieval mode for state-query based retrieval
+    romemo_retrieval_mode=(
+        "visual",
+        "string",
+        "RoMemo: retrieval mode - 'visual' (default), 'symbolic', or 'hybrid'.",
+    ),
+    romemo_symbolic_weight=(
+        0.5,
+        "float",
+        "RoMemo: weight for symbolic filtering in hybrid mode (0=visual only, 1=symbolic only).",
+    ),
+    romemo_min_symbolic_candidates=(
+        5,
+        "integer",
+        "RoMemo: minimum candidates from symbolic filter before fallback to visual.",
+    ),
     trace_jsonl=(True, "bool", "Write step/episode traces as JSONL."),
     save_images=(True, "bool", "Save trajectory images to disk."),
     # MCTS baseline
@@ -372,6 +388,10 @@ def main(_):
             # If we are generating expert data (expert_romemo_wb), we ONLY want successes.
             # Oracle failures are usually sim noise (false negatives), so we ignore them.
             write_on_failure=(FLAGS.agent_type != "expert_romemo_wb"),
+            # NEW: Retrieval mode for state-query based retrieval
+            retrieval_mode=str(FLAGS.romemo_retrieval_mode),
+            symbolic_weight=float(FLAGS.romemo_symbolic_weight),
+            min_symbolic_candidates=int(FLAGS.romemo_min_symbolic_candidates),
         )
         romemo_store = RoMemoStore(
             task="assembly",
@@ -452,7 +472,9 @@ def main(_):
                     def encode_image(self, image):
                         if self.encoder_agent and hasattr(self.encoder_agent, "encode_image"):
                             return self.encoder_agent.encode_image(image)
-                        raise NotImplementedError("Encoder agent missing or does not support encode_image")
+                        raise NotImplementedError(
+                            "Encoder agent missing or does not support encode_image"
+                        )
 
                 base = _OracleBase(oracle_agent, base_llava_agent)
                 return RoMemoDiscreteAgent(

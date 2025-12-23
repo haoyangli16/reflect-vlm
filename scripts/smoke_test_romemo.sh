@@ -55,6 +55,10 @@ MEM_COLLECT_TRAJS=${MEM_COLLECT_TRAJS:-3}
 SAVE_ROOT=${SAVE_ROOT:-"logs/smoke_test_romemo"}
 MAX_STEPS=${MAX_STEPS:-50}
 
+# NEW: Retrieval mode for state-query based retrieval
+RETRIEVAL_MODE=${RETRIEVAL_MODE:-"visual"}
+SYMBOLIC_WEIGHT=${SYMBOLIC_WEIGHT:-0.5}
+
 # MCTS speed controls (override via env vars)
 MCTS_SIMS=${MCTS_SIMS:-50}
 MCTS_PROPOSAL_OBS=${MCTS_PROPOSAL_OBS:-root}
@@ -150,7 +154,9 @@ for agent_seed in ${AGENT_SEEDS//,/ }; do
     if [[ $method == *"romemo"* ]]; then
       CMD="$CMD \
         --romemo_init_memory_path=\"$INIT_MEMORY_PATH\" \
-        --romemo_save_memory_path=\"$RUN_DIR/romemo_memory.pt\""
+        --romemo_save_memory_path=\"$RUN_DIR/romemo_memory.pt\" \
+        --romemo_retrieval_mode=\"$RETRIEVAL_MODE\" \
+        --romemo_symbolic_weight=$SYMBOLIC_WEIGHT"
     fi
     
     # Add model args:
