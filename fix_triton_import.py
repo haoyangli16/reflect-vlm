@@ -15,6 +15,14 @@ os.environ.setdefault("MUJOCO_GL", "egl")
 os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
 
 # ==========================================
+# HuggingFace Offline Mode
+# ==========================================
+# Force HuggingFace to use local cache only (no network requests)
+# This prevents the stuck "Downloading shards" issue when model is already cached
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
+# ==========================================
 # Triton / BitsAndBytes Fixes
 # ==========================================
 # Set environment variable to prevent triton from using ptxas

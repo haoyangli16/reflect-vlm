@@ -29,6 +29,14 @@ export HF_HOME="${HF_HOME:-/share/project/hf_cache}"
 export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME/transformers}"
 mkdir -p "$HF_HOME" "$TRANSFORMERS_CACHE"
 
+# ==========================================
+# OFFLINE MODE: Use local cached models (no network)
+# ==========================================
+# Set HF_HUB_OFFLINE=1 to force using local cache only
+# This prevents the stuck "Downloading shards" issue
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
+
 
 # Set the number of parallel jobs.
 # Adjust this based on your GPU count and VRAM.
