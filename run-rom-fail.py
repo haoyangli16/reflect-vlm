@@ -96,6 +96,11 @@ FLAGS_DEF = define_flags(
         "bool",
         "Also write success experiences (default: False for pure failure memory)",
     ),
+    stop_on_failure=(
+        True,
+        "bool",
+        "Stop episode after first failure and move to next environment (default: True)",
+    ),
     logging=WandBLogger.get_default_config(),
 )
 
@@ -540,29 +545,82 @@ def main(_):
                         print(f"  >> FAILURE DIAGNOSED: {diagnosis['fail_tag']}")
                         print(f"     Constraint: {diagnosis['inferred_constraint']}")
 
+                        # Stop episode after first failure if configured
+                        if FLAGS.stop_on_failure:
+                            print("  >> Stopping episode (stop_on_failure=True)")
+                            # Still need to do writeback before breaking
+                            if hasattr(agent, "update"):
+                                try:
+                                    agent.update(
+                                        exec_action,
+                                        int(err if exec_action != "done" else 0),
+                                        episode_id=traj_id,
+                                        step_id=t,
+                                        fail_tag=diagnosis["fail_tag"],
+                                        history=copy.deepcopy(history),
+                                        oracle_state_context=diagnosis["oracle_state_context"],
+                                    )
+                                except TypeError:
+                                    try:
+                                        agent.update(
+                                            exec_action, int(err if exec_action != "done" else 0)
+                                        )
+                                    except Exception:
+                                        pass
+                            # Log failure trace before breaking
+                            if FLAGS.trace_jsonl:
+                                st = {
+                                    "traj_id": int(traj_id),
+                                    "env_seed": int(env_seed),
+                                    "reset_seed": int(reset_seed),
+                                    "step_id": int(t),
+                                    "agent_type": str(FLAGS.agent_type),
+                                    "agent_seed": int(FLAGS.agent_seed),
+                                    "oracle_action": str(oracle_action),
+                                    "agent_action": str(agent_act_list[t]),
+                                    "exec_action": str(exec_action),
+                                    "err_code": int(err if exec_action != "done" else 0),
+                                    "step_fail": True,
+                                    "fail_tag": diagnosis["fail_tag"],
+                                    "oracle_state_context": diagnosis["oracle_state_context"],
+                                    "inferred_constraint": diagnosis["inferred_constraint"],
+                                    "history": copy.deepcopy(history),
+                                    "is_success_after": bool(env.is_success()),
+                                    "stopped_on_failure": True,
+                                }
+                                _jsonl_append(step_trace_path, st)
+                                _jsonl_append(failure_trace_path, st)
+                            break  # Exit the step loop, move to next episode
+
                     # ========================================
                     # WRITEBACK: Store failure in memory
+                    # (Skip if already handled in stop_on_failure block above)
                     # ========================================
-                    if hasattr(agent, "update"):
-                        try:
-                            agent.update(
-                                exec_action,
-                                int(err if exec_action != "done" else 0),
-                                episode_id=traj_id,
-                                step_id=t,
-                                fail_tag=diagnosis["fail_tag"],
-                                history=copy.deepcopy(history),
-                                oracle_state_context=diagnosis["oracle_state_context"],
-                            )
-                        except TypeError:
-                            # Fallback for older signature
+                    if diagnosis["fail_tag"] is None or not FLAGS.stop_on_failure:
+                        if hasattr(agent, "update"):
                             try:
-                                agent.update(exec_action, int(err if exec_action != "done" else 0))
-                            except Exception:
-                                pass
+                                agent.update(
+                                    exec_action,
+                                    int(err if exec_action != "done" else 0),
+                                    episode_id=traj_id,
+                                    step_id=t,
+                                    fail_tag=diagnosis["fail_tag"],
+                                    history=copy.deepcopy(history),
+                                    oracle_state_context=diagnosis["oracle_state_context"],
+                                )
+                            except TypeError:
+                                # Fallback for older signature
+                                try:
+                                    agent.update(
+                                        exec_action, int(err if exec_action != "done" else 0)
+                                    )
+                                except Exception:
+                                    pass
 
-                    # Trace logging
-                    if FLAGS.trace_jsonl:
+                    # Trace logging (skip if already handled in stop_on_failure block)
+                    if FLAGS.trace_jsonl and not (
+                        diagnosis["fail_tag"] is not None and FLAGS.stop_on_failure
+                    ):
                         st = {
                             "traj_id": int(traj_id),
                             "env_seed": int(env_seed),

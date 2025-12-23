@@ -8,3 +8,5 @@ MUJOCO_LOG.TXT
 
 *.md
 *.xml
+
+*.pdf
