@@ -49,7 +49,9 @@ SAVE_ROOT=${SAVE_ROOT:-logs/eval_romemo_plugin}
 AGENT_SEEDS=${AGENT_SEEDS:-0,1,2}
 
 # BC model == their base VLM checkpoint (behavior cloning style)
-BC_MODEL_PATH=${BC_MODEL_PATH:-yunhaif/ReflectVLM-llava-v1.5-13b-base}
+# Local model paths (default to your local directories)
+BASE_MODEL_PATH="${BASE_MODEL_PATH:-/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-base}"
+BC_MODEL_PATH=${BC_MODEL_PATH:-$BASE_MODEL_PATH}
 
 # Build an initial RoMemo memory (expert rollouts) once.
 ROMEMO_MEM_PATH=${ROMEMO_MEM_PATH:-${SAVE_ROOT}/romemo_init_memory.pt}
@@ -76,9 +78,6 @@ if [ ! -f "${ROMEMO_MEM_PATH}" ]; then
 fi
 
 declare -a METHODS=(
-  "mcts"
-  "mcts_romemo"
-  "mcts_romemo_wb"
   "bc"
   "bc_romemo"
   "bc_romemo_wb"

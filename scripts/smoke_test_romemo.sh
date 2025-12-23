@@ -6,7 +6,7 @@
 #
 # Useful env overrides:
 #   SEED, NUM_TRAJS, LEVEL, AGENT_SEEDS, MEM_COLLECT_TRAJS, SAVE_ROOT, MAX_STEPS
-#   METHODS="bc,bc_romemo" or ONLY_METHOD="mcts"
+#   METHODS="bc,bc_romemo" or ONLY_METHOD="reflect"
 #   DO_INIT_MEMORY=0/1, DO_RUN=0/1, DO_AGG=0/1, DO_PLOT=0/1
 #   INIT_MEMORY_PATH=/path/to/romemo_memory.pt
 export MUJOCO_GL=egl 
@@ -43,7 +43,7 @@ set -euo pipefail
 
 echo "=========================================="
 echo "RoMemo Plugin Smoke Test"
-echo "Running 3 tasks × 9 methods × 1 seed"
+echo "Running 3 tasks × 6 methods × 1 seed"
 echo "=========================================="
 
 # Configuration (override via env vars)
@@ -75,6 +75,10 @@ cd "$REFLECT_VLM_ROOT"
 
 INIT_MEMORY_PATH=${INIT_MEMORY_PATH:-"$SAVE_ROOT/romemo_init_memory/romemo_memory.pt"}
 
+# Local model paths (default to your local directories)
+BASE_MODEL_PATH="${BASE_MODEL_PATH:-/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-base}"
+POST_MODEL_PATH="${POST_MODEL_PATH:-/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-post-trained}"
+
 if [[ "$DO_INIT_MEMORY" != "0" ]]; then
   echo ""
   echo "Step 0: Building initial RoMemo memory (${MEM_COLLECT_TRAJS} expert trajs)..."
@@ -93,6 +97,8 @@ if [[ "$DO_INIT_MEMORY" != "0" ]]; then
     --imagine_future_steps=5 \
     --record=False \
     --max_steps=$MAX_STEPS \
+    --model_path="$POST_MODEL_PATH" \
+    --load_4bit=True \
     --romemo_save_memory_path="$INIT_MEMORY_PATH"
 fi
 
@@ -111,7 +117,8 @@ elif [[ -n "${METHODS:-}" ]]; then
     [[ -n "$x" ]] && methods+=("$x")
   done
 else
-  methods+=("bc" "bc_romemo" "bc_romemo_wb" "reflect" "reflect_romemo" "reflect_romemo_wb" "mcts" "mcts_romemo" "mcts_romemo_wb")
+  # NOTE: We do NOT run MCTS methods (too slow).
+  methods+=("bc" "bc_romemo" "bc_romemo_wb" "reflect" "reflect_romemo" "reflect_romemo_wb")
 fi
 
 for agent_seed in ${AGENT_SEEDS//,/ }; do
@@ -146,19 +153,13 @@ for agent_seed in ${AGENT_SEEDS//,/ }; do
         --romemo_save_memory_path=\"$RUN_DIR/romemo_memory.pt\""
     fi
     
-    # Add model args for BC/VLM (and MCTS, which now uses VLM proposals)
-    if [[ $method == bc* || $method == mcts* || $method == reflect* ]]; then
-      # Use post-trained model (better than base model)
-      CMD="$CMD \
-        --model_path='/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-base' \
-        --load_4bit=True"
-    fi
-
-    # MCTS tuning (speed vs quality)
-    if [[ $method == mcts* ]]; then
-      CMD="$CMD \
-        --mcts_sims=$MCTS_SIMS \
-        --mcts_proposal_observation=$MCTS_PROPOSAL_OBS"
+    # Add model args:
+    # - bc* MUST use BASE model
+    # - reflect* MUST use POST-TRAINED model
+    if [[ $method == bc* ]]; then
+      CMD="$CMD --model_path=\"$BASE_MODEL_PATH\" --load_4bit=True"
+    elif [[ $method == reflect* ]]; then
+      CMD="$CMD --model_path=\"$POST_MODEL_PATH\" --load_4bit=True"
     fi
 
     # Reflect policies use sim-based reflection (run-rom.py reflect* agents)

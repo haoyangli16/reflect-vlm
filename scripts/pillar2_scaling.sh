@@ -49,6 +49,9 @@ SCALING_SIZES=${SCALING_SIZES:-"0,10,50,100,500,1000,2000"}
 BASE_METHOD="bc"
 ROMEMO_METHOD="bc_romemo"
 
+# Local model paths (default to your local directories)
+BASE_MODEL_PATH="${BASE_MODEL_PATH:-/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-base}"
+
 IFS=',' read -ra GPU_ARR <<< "$GPUS"
 IFS=',' read -ra SIZES_ARR <<< "$SCALING_SIZES"
 NGPU=${#GPU_ARR[@]}
@@ -115,7 +118,7 @@ run_one() {
         --record=False \
         --max_steps=$MAX_STEPS \
         --agent_seed=$seed \
-        --model_path='yunhaif/ReflectVLM-llava-v1.5-13b-post-trained' \
+        --model_path=\"$BASE_MODEL_PATH\" \
         --load_4bit=True"
     
     # Add RoMemo args if using memory

@@ -30,7 +30,9 @@ export WANDB_MODE=disabled
 # export http_proxy=104.250.52.76:2080
 
 exp_name="eval_base_vlm"
-model_path='yunhaif/ReflectVLM-llava-v1.5-13b-base'
+# Local model paths (default to your local directories)
+BASE_MODEL_PATH="${BASE_MODEL_PATH:-/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-base}"
+model_path="$BASE_MODEL_PATH"
 
 python run-rom.py \
     --seed=1000000 \

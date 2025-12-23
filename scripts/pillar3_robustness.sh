@@ -51,6 +51,9 @@ OOD_RATIOS=${OOD_RATIOS:-"100,80,60,40,20"}
 # Fixed method for OOD experiment
 METHOD="bc_romemo"
 
+# Local model paths (default to your local directories)
+BASE_MODEL_PATH="${BASE_MODEL_PATH:-/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-base}"
+
 IFS=',' read -ra GPU_ARR <<< "$GPUS"
 IFS=',' read -ra RATIOS_ARR <<< "$OOD_RATIOS"
 NGPU=${#GPU_ARR[@]}
@@ -110,7 +113,7 @@ run_one() {
         --record=False \
         --max_steps=$MAX_STEPS \
         --agent_seed=$seed \
-        --model_path='yunhaif/ReflectVLM-llava-v1.5-13b-post-trained' \
+        --model_path="$BASE_MODEL_PATH" \
         --load_4bit=True \
         --romemo_init_memory_path="$mem_path" \
         --romemo_save_memory_path="$RUN_DIR/romemo_memory.pt"

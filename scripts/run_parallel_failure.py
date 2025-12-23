@@ -51,7 +51,7 @@ def merge_memory_banks(part_paths, output_path):
         if tag:
             fail_tags[tag] = fail_tags.get(tag, 0) + 1
 
-    print(f"\nFailure tag distribution:")
+    print("\nFailure tag distribution:")
     for tag, count in sorted(fail_tags.items(), key=lambda x: -x[1]):
         print(f"  {tag}: {count}")
 
@@ -79,7 +79,12 @@ def main():
         default="bc_romemo_wb",
         help="Agent type for failure collection (bc_romemo_wb, bc, llava)",
     )
-    parser.add_argument("--model_path", type=str, required=True)
+    parser.add_argument(
+        "--model_path",
+        type=str,
+        default=None,
+        help="Model path. If not provided: bc* uses BASE_MODEL_PATH, reflect* uses POST_MODEL_PATH.",
+    )
     parser.add_argument("--output_pt", type=str, required=True, help="Final merged memory path")
     parser.add_argument("--level", type=str, default="all")
     parser.add_argument("--seed_start", type=int, default=0, help="Base seed")
@@ -120,6 +125,21 @@ def main():
     print(f"Stop on failure: {args.stop_on_failure}")
     print(f"Write on success: {args.write_on_success}")
 
+    base_model = os.environ.get(
+        "BASE_MODEL_PATH",
+        "/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-base",
+    )
+    post_model = os.environ.get(
+        "POST_MODEL_PATH",
+        "/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-post-trained",
+    )
+    if args.model_path is None:
+        if str(args.agent_type).startswith("reflect"):
+            args.model_path = post_model
+        else:
+            args.model_path = base_model
+    print(f"Model path: {args.model_path}")
+
     # Prepare directories
     if os.path.exists(args.output_dir_base):
         print(f"Warning: {args.output_dir_base} exists. Cleaning up...")
@@ -158,9 +178,9 @@ def main():
             f"--n_trajs={trajs_per_job}",
             f"--romemo_save_memory_path={part_pt}",
             f"--level={args.level}",
-            f"--record=False",
-            f"--oracle_prob=0.0",  # No oracle help - let agent make mistakes
-            f"--save_images=False",
+            "--record=False",
+            "--oracle_prob=0.0",  # No oracle help - let agent make mistakes
+            "--save_images=False",
             f"--logging.online={args.logging_online}",
             f"--load_4bit={args.load_4bit}",
             f"--model_path={args.model_path}",
@@ -171,7 +191,7 @@ def main():
             f"--reset_seed_start={job_seed}",
             f"--stop_on_failure={args.stop_on_failure}",
             f"--write_on_success={args.write_on_success}",
-            f"--trace_jsonl=True",
+            "--trace_jsonl=True",
         ]
 
         env_vars = os.environ.copy()

@@ -18,7 +18,9 @@ fi
 
 dynamics_model=$1
 exp_name="eval_reflect_vlm_${dynamics_model}"
-model_path="yunhaif/ReflectVLM-llava-v1.5-13b-post-trained"
+# Local model paths (default to your local directories)
+POST_MODEL_PATH="${POST_MODEL_PATH:-/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-post-trained}"
+model_path="$POST_MODEL_PATH"
 
 if [ $dynamics_model == "diffusion" ]; then
     diffusion_args="--diffuser_pretrained_model=yunhaif/ReflectVLM-diffusion"

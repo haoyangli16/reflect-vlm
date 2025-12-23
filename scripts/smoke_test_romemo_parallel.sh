@@ -18,6 +18,10 @@ set -euo pipefail
 REFLECT_VLM_ROOT="${REFLECT_VLM_ROOT:-/share/project/lhy/thirdparty/reflect-vlm}"
 cd "$REFLECT_VLM_ROOT"
 
+# Local model paths (default to your local directories)
+export BASE_MODEL_PATH="${BASE_MODEL_PATH:-/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-base}"
+export POST_MODEL_PATH="${POST_MODEL_PATH:-/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-post-trained}"
+
 GPUS=${GPUS:-"0,1,2,3,4,5,6,7"}
 INIT_GPU=${INIT_GPU:-0}
 FORCE_REBUILD_INIT=${FORCE_REBUILD_INIT:-0}

@@ -24,8 +24,14 @@ def test_llava_encode():
     try:
         # Load lightweight model for testing
         print("Loading LlavaAgent (this may take 30s)...")
+        import os
+
+        base_model_path = os.environ.get(
+            "BASE_MODEL_PATH",
+            "/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-base",
+        )
         agent = LlavaAgent(
-            model_path="yunhaif/ReflectVLM-llava-v1.5-13b-base",
+            model_path=base_model_path,
             load_4bit=True,
         )
         print("✓ Model loaded")
@@ -91,7 +97,15 @@ def test_romemo_wrapper():
             board_name="brick_1",
             fixture_name=None,
             peg_names=[f"brick_{j + 1}" for j in range(1, 8)],
-            peg_descriptions=['orange block', 'purple block', 'yellow block', 'blue block', 'brown block', 'pink nail', 'red nail'],
+            peg_descriptions=[
+                "orange block",
+                "purple block",
+                "yellow block",
+                "blue block",
+                "brown block",
+                "pink nail",
+                "red nail",
+            ],
             render_mode="offscreen",
             frame_skip=20,
             max_episode_length=50000,
@@ -102,8 +116,14 @@ def test_romemo_wrapper():
 
         # Load base agent
         print("Loading base VLM agent...")
+        import os
+
+        base_model_path = os.environ.get(
+            "BASE_MODEL_PATH",
+            "/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-base",
+        )
         base = LlavaAgent(
-            model_path="yunhaif/ReflectVLM-llava-v1.5-13b-base",
+            model_path=base_model_path,
             load_4bit=True,
         )
         print("✓ Base agent loaded")

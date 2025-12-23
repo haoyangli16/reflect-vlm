@@ -39,8 +39,11 @@ mkdir -p "${LOGS_DIR}"
 N_TRAJS="${N_TRAJS:-100}"           # Number of test trajectories
 LEVEL="${LEVEL:-all}"                # Task difficulty
 SEED="${SEED:-0}"                    # Random seed
-MODEL_PATH="${MODEL_PATH:-yunhaif/ReflectVLM-llava-v1.5-13b-post-trained}"
 LOAD_4BIT="${LOAD_4BIT:-True}"
+
+# Local model paths (default to your local directories)
+BASE_MODEL_PATH="${BASE_MODEL_PATH:-/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-base}"
+POST_MODEL_PATH="${POST_MODEL_PATH:-/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-post-trained}"
 
 # Memory paths
 SUCCESS_MEMORY="${SUCCESS_MEMORY:-${DATA_DIR}/raw_expert_indomain.pt}"
@@ -160,6 +163,15 @@ for method in "${METHODS_ARRAY[@]}"; do
     
     # Map method name to actual agent_type
     AGENT_TYPE="${BASE_METHOD}"
+
+    # Pick model by method family:
+    # - bc* uses BASE model
+    # - reflect* uses POST-TRAINED model
+    if [[ "${AGENT_TYPE}" == reflect* ]]; then
+        MODEL_PATH="${MODEL_PATH:-$POST_MODEL_PATH}"
+    else
+        MODEL_PATH="${MODEL_PATH:-$BASE_MODEL_PATH}"
+    fi
     
     # Run experiment
     python -u "${PROJECT_ROOT}/run-rom.py" \

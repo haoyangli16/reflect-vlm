@@ -33,6 +33,10 @@ set -euo pipefail
 REFLECT_VLM_ROOT="${REFLECT_VLM_ROOT:-/share/project/lhy/thirdparty/reflect-vlm}"
 cd "$REFLECT_VLM_ROOT"
 
+# Local model paths (default to your local directories)
+BASE_MODEL_PATH="${BASE_MODEL_PATH:-/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-base}"
+POST_MODEL_PATH="${POST_MODEL_PATH:-/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-post-trained}"
+
 # Configuration (minimal for smoke test)
 GPUS=${GPUS:-"0,1,2,3,4,5,6,7"}
 SAVE_ROOT=${SAVE_ROOT:-"logs/smoke_three_pillars"}
@@ -83,6 +87,8 @@ if [[ ! -f "$IN_DOMAIN_MEMORY" ]]; then
         --oracle_prob=1.0 \
         --record=False \
         --max_steps=$SMOKE_MAX_STEPS \
+        --model_path="$POST_MODEL_PATH" \
+        --load_4bit=True \
         --romemo_save_memory_path="$IN_DOMAIN_MEMORY"
 fi
 
@@ -101,6 +107,8 @@ if [[ ! -f "$OOD_MEMORY" ]]; then
         --oracle_prob=1.0 \
         --record=False \
         --max_steps=$SMOKE_MAX_STEPS \
+        --model_path="$POST_MODEL_PATH" \
+        --load_4bit=True \
         --romemo_save_memory_path="$OOD_MEMORY"
 fi
 

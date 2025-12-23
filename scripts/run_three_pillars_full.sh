@@ -36,6 +36,10 @@ set -euo pipefail
 REFLECT_VLM_ROOT="${REFLECT_VLM_ROOT:-/share/project/lhy/thirdparty/reflect-vlm}"
 cd "$REFLECT_VLM_ROOT"
 
+# Local model paths (default to your local directories)
+export BASE_MODEL_PATH="${BASE_MODEL_PATH:-/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-base}"
+export POST_MODEL_PATH="${POST_MODEL_PATH:-/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-post-trained}"
+
 # Configuration
 GPUS=${GPUS:-"0,1,2,3,4,5,6,7"}
 DATA_ROOT=${DATA_ROOT:-"data/three_pillars"}
@@ -220,8 +224,8 @@ echo "=========================================="
 echo "Paper Claims Supported:"
 echo "=========================================="
 echo ""
-echo "  1. UNIVERSALITY: 'RoMemo improves BC, Reflect, AND MCTS'"
-echo "     → Check: All *_romemo methods have higher SR than baselines"
+echo "  1. UNIVERSALITY: 'RoMemo improves BC and Reflect at test time'"
+echo "     → Check: *_romemo methods have higher SR than baselines"
 echo ""
 echo "  2. SCALING: 'Memory data scales predictably with log(N)'"
 echo "     → Check: scaling_law.png shows diminishing returns curve"

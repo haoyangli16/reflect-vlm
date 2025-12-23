@@ -1,6 +1,6 @@
 #!/bin/bash
 # Pillar 1: Universality Sweep
-# Compares BC, Reflect, MCTS with and without RoMemo (N=100 Memory).
+# Compares BC and Reflect with and without RoMemo (N=100 Memory).
 
 export GPUS=${GPUS:-"0,1,2,3,4,5,6,7"}
 export INIT_MEMORY_PATH="data/three_pillars/memory_subsets/mem_100.pt"

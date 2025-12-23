@@ -76,7 +76,16 @@ N_TRAJS="${N_TRAJS:-1000}"  # Number of trajectories (more = more failures)
 LEVEL="${LEVEL:-all}"       # Task difficulty: medium, hard, all
 SEED="${SEED:-1000001}"           # Random seed
 AGENT_TYPE="${AGENT_TYPE:-bc_romemo_wb}"  # Agent to generate failures
-MODEL_PATH="${MODEL_PATH:-yunhaif/ReflectVLM-llava-v1.5-13b-base}"
+# Local model paths (default to your local directories)
+BASE_MODEL_PATH="${BASE_MODEL_PATH:-/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-base}"
+POST_MODEL_PATH="${POST_MODEL_PATH:-/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-post-trained}"
+
+# bc* should always use the BASE model; reflect* should use the POST-TRAINED model.
+if [[ "${AGENT_TYPE}" == reflect* ]]; then
+  MODEL_PATH="${MODEL_PATH:-$POST_MODEL_PATH}"
+else
+  MODEL_PATH="${MODEL_PATH:-$BASE_MODEL_PATH}"
+fi
 LOAD_4BIT="${LOAD_4BIT:-True}"
 OUTPUT_PT="${OUTPUT_PT:-${DATA_DIR}/raw_failure_constraints.pt}"
 OUTPUT_DIR_BASE="${OUTPUT_DIR_BASE:-${DATA_DIR}/failure_collection}"
@@ -109,7 +118,6 @@ python scripts/run_parallel_failure.py \
     --gpus="${GPUS}" \
     --total_trajs="${N_TRAJS}" \
     --agent_type="${AGENT_TYPE}" \
-    --model_path="${MODEL_PATH}" \
     --output_pt="${OUTPUT_PT}" \
     --level="${LEVEL}" \
     --seed_start="${SEED}" \
