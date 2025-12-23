@@ -460,10 +460,18 @@ class RoMemoDiscreteAgent:
         err_code: int,
         episode_id: Optional[int] = None,
         step_id: Optional[int] = None,
+        fail_tag: Optional[str] = None,
+        history: Optional[List[str]] = None,
+        oracle_state_context: Optional[str] = None,
     ):
         """
         Align with RoMemo update_on_failure: write an Experience after outcome is observed.
         We treat err_code!=0 or (done but not success) as failure.
+
+        Enhanced for Failure Memory Collection:
+        - fail_tag: explicit constraint tag from Oracle diagnosis (e.g., "BLOCKED_BY_PREDECESSOR")
+        - history: full action history for this episode (for context)
+        - oracle_state_context: raw Oracle state string for debugging
         """
         if not self.writeback_enabled or self.store.writeback is None:
             return {}
@@ -476,25 +484,40 @@ class RoMemoDiscreteAgent:
         is_done = a == "done"
         env_success = bool(self.env.is_success()) if hasattr(self.env, "is_success") else False
 
+        # Determine failure status
         fail = False
-        fail_tag = None
-        if int(err_code) != 0:
+        inferred_fail_tag = None
+
+        # Use explicit fail_tag if provided (from Oracle diagnosis)
+        if fail_tag is not None:
             fail = True
-            fail_tag = "invalid_action"
+            inferred_fail_tag = fail_tag
+        elif int(err_code) != 0:
+            fail = True
+            inferred_fail_tag = "invalid_action"
         elif is_done and (not env_success):
             fail = True
-            fail_tag = "bad_done"
+            inferred_fail_tag = "bad_done"
 
         self._pending.success = bool((not fail) and (not is_done))
         self._pending.fail = bool(fail)
-        self._pending.fail_tag = fail_tag
+        self._pending.fail_tag = inferred_fail_tag
         self._pending.steps = 1
+
+        # Enhanced extra_metrics with full context
         if self._pending.extra_metrics is not None:
             self._pending.extra_metrics["episode_id"] = (
                 int(episode_id) if episode_id is not None else None
             )
             self._pending.extra_metrics["step_id"] = int(step_id) if step_id is not None else None
             self._pending.extra_metrics["err_code"] = int(err_code)
+            self._pending.extra_metrics["fail_tag"] = inferred_fail_tag
+
+            # New fields for Failure Memory
+            if history is not None:
+                self._pending.extra_metrics["history"] = list(history)
+            if oracle_state_context is not None:
+                self._pending.extra_metrics["oracle_state_context"] = str(oracle_state_context)
 
         if fail:
             self.store.repeat_fail_counts[(ctx_hash, a)] = int(
@@ -508,13 +531,15 @@ class RoMemoDiscreteAgent:
                     correction={
                         "avoid_action": a,
                         "context_hash": ctx_hash,
+                        "fail_tag": inferred_fail_tag,
+                        "oracle_state_context": oracle_state_context,
                     },
                 )
             else:
                 self.store.writeback.write(self._pending)
 
         # clear pending
-        out = {"fail": bool(fail), "fail_tag": fail_tag}
+        out = {"fail": bool(fail), "fail_tag": inferred_fail_tag}
         self._pending = None
         self._pending_pred = None
         return out
