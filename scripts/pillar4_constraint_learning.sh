@@ -1,6 +1,6 @@
 #!/bin/bash
-# Pillar 4: Constraint Learning Experiment
-# =========================================
+# Pillar 4: Constraint Learning Experiment (Parallelized)
+# =========================================================
 # This experiment tests whether adding "Failure Memory" (Constraints) 
 # prevents the VLM from repeating known physics/logic errors.
 #
@@ -19,8 +19,29 @@
 # Mechanism:
 #   Failure memories apply a NEGATIVE score penalty to actions
 #   that previously failed in similar contexts.
+#   Additionally, oracle_action is BOOSTED to suggest corrections.
+#
+# Env overrides:
+#   GPUS="0,1,2,3,4,5,6,7"
+#   TOTAL_MEMORY_SIZE=1000
+#   GOOD_RATIOS="20,40,60,80,100"
+#   METHODS="bc_romemo,bc_romemo_wb,reflect_romemo,reflect_romemo_wb"
+
+export MUJOCO_GL=egl
+export PYOPENGL_PLATFORM=egl
+export TRITON_PTXAS_PATH=""
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+export TRANSFORMERS_VERBOSITY=error
+export TOKENIZERS_PARALLELISM=false
+export HF_ENDPOINT=https://hf-mirror.com
+export HF_HOME="${HF_HOME:-/share/project/hf_cache}"
+export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME/transformers}"
+mkdir -p "$HF_HOME" "$TRANSFORMERS_CACHE"
 
 set -euo pipefail
+
+REFLECT_VLM_ROOT="${REFLECT_VLM_ROOT:-/share/project/lhy/thirdparty/reflect-vlm}"
+cd "$REFLECT_VLM_ROOT"
 
 # Configuration
 export PYTHONUNBUFFERED=1
@@ -30,7 +51,7 @@ export WANDB_SILENT=true
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 DATA_DIR="${PROJECT_ROOT}/data"
-LOGS_DIR="${PROJECT_ROOT}/logs/pillar4_constraints_ratio"
+LOGS_DIR="${LOGS_DIR:-${PROJECT_ROOT}/logs/pillar4_constraints_ratio}"
 
 # Create directories
 mkdir -p "${LOGS_DIR}"
@@ -38,13 +59,13 @@ mkdir -p "${LOGS_DIR}"
 # ==========================================
 # Configuration Variables (override with env vars)
 # ==========================================
-N_TRAJS="${N_TRAJS:-100}"           # Number of test trajectories
-LEVEL="${LEVEL:-all}"                # Task difficulty
-SEED="${SEED:-0}"                    # Random seed
+GPUS=${GPUS:-"0,1,2,3,4,5,6,7"}
+NUM_TRAJS="${NUM_TRAJS:-100}"           # Number of test trajectories
+LEVEL="${LEVEL:-all}"                    # Task difficulty
+TEST_SEED="${TEST_SEED:-1000001}"        # Random seed for test environments
+AGENT_SEEDS="${AGENT_SEEDS:-0}"          # Agent seeds (comma-separated)
+MAX_STEPS="${MAX_STEPS:-50}"
 LOAD_4BIT="${LOAD_4BIT:-True}"
-
-# Parallel config
-GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
 
 # Local model paths (default to your local directories)
 BASE_MODEL_PATH="${BASE_MODEL_PATH:-/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-base}"
@@ -61,45 +82,63 @@ GOOD_RATIOS="${GOOD_RATIOS:-20,40,60,80,100}"  # % good (success) memory; remain
 # Methods to run (all use RoMemo memory input)
 METHODS="${METHODS:-bc_romemo,bc_romemo_wb,reflect_romemo,reflect_romemo_wb}"
 
-# Optional: run multiple agent seeds (comma-separated). Default 1 seed for efficiency.
-AGENT_SEEDS="${AGENT_SEEDS:-0}"
+IFS=',' read -ra GPU_ARR <<< "$GPUS"
+IFS=',' read -ra METHODS_ARR <<< "$METHODS"
+IFS=',' read -ra RATIOS_ARR <<< "$GOOD_RATIOS"
+IFS=',' read -ra SEEDS_ARR <<< "${AGENT_SEEDS// /}"
+NGPU=${#GPU_ARR[@]}
 
 echo "=========================================="
-echo "Pillar 4: Constraint Learning Experiment"
+echo "Pillar 4: Constraint Learning (Parallelized)"
 echo "=========================================="
-echo "Test trajectories: ${N_TRAJS}"
-echo "Level: ${LEVEL}"
+echo "Question: Does failure memory reduce constraint violations?"
+echo ""
+echo "GPUs:             $GPUS ($NGPU total)"
+echo "Test trajectories: ${NUM_TRAJS} (seed=${TEST_SEED}, level=${LEVEL})"
+echo "Agent seeds:      ${AGENT_SEEDS}"
 echo "Total memory size: ${TOTAL_MEMORY_SIZE}"
 echo "Good ratios (%):   ${GOOD_RATIOS}"
-echo "Success memory: ${SUCCESS_MEMORY}"
-echo "Failure memory: ${FAILURE_MEMORY}"
-echo "Methods: ${METHODS}"
-echo "Agent seeds: ${AGENT_SEEDS}"
-echo "GPUs: ${GPUS}"
+echo "Methods:          ${METHODS}"
+echo "Success memory:   ${SUCCESS_MEMORY}"
+echo "Failure memory:   ${FAILURE_MEMORY}"
+echo "Output:           ${LOGS_DIR}"
 echo "=========================================="
 
 # ==========================================
-# Helper: Build a fixed-size mixed memory bank
+# Step 1: Pre-build all mixed memory files
 # ==========================================
-make_mixed_memory() {
-    local success_pt="$1"
-    local failure_pt="$2"
-    local total_n="$3"
-    local good_ratio="$4"
-    local seed="$5"
-    local output_pt="$6"
+echo ""
+echo "=========================================="
+echo "Step 1: Building mixed memory banks..."
+echo "=========================================="
 
-    python - <<'PY'
+MIXED_MEM_DIR="${DATA_DIR}/mixed_memories"
+mkdir -p "${MIXED_MEM_DIR}"
+
+for ratio in "${RATIOS_ARR[@]}"; do
+    ratio="${ratio// /}"
+    [[ -z "$ratio" ]] && continue
+    
+    MIXED_MEMORY="${MIXED_MEM_DIR}/mixed_${TOTAL_MEMORY_SIZE}_good${ratio}.pt"
+    
+    if [[ -f "${MIXED_MEMORY}" ]]; then
+        echo "  [SKIP] ${MIXED_MEMORY} (already exists)"
+        continue
+    fi
+    
+    echo "  Creating: total=${TOTAL_MEMORY_SIZE}, good_ratio=${ratio}%"
+    
+    python - <<PY
 import os
 import random
 from pathlib import Path
 
-success_path = Path(os.environ["SUCCESS_PT"])
-failure_path = Path(os.environ["FAILURE_PT"])
-output_path = Path(os.environ["OUTPUT_PT"])
-total_n = int(os.environ["TOTAL_N"])
-good_ratio = int(os.environ["GOOD_RATIO"])
-seed = int(os.environ["MIX_SEED"])
+success_path = Path("${SUCCESS_MEMORY}")
+failure_path = Path("${FAILURE_MEMORY}")
+output_path = Path("${MIXED_MEMORY}")
+total_n = ${TOTAL_MEMORY_SIZE}
+good_ratio = ${ratio}
+seed = ${TEST_SEED}
 
 from romemo.memory.schema import MemoryBank
 
@@ -133,132 +172,109 @@ for e in mixed:
 
 output_path.parent.mkdir(parents=True, exist_ok=True)
 out.save_pt(str(output_path))
-print(f"[OK] Saved mixed memory: {output_path}")
-print(f"     total={len(mixed)} good={n_good} fail={n_fail} (good_ratio={good_ratio}%)")
+print(f"  [OK] Saved: {output_path} (good={n_good}, fail={n_fail})")
 PY
-}
-
-# ==========================================
-# Run Experiments
-# ==========================================
-
-# Parse methods
-IFS=',' read -ra METHODS_ARRAY <<< "${METHODS}"
-IFS=',' read -ra RATIOS_ARRAY <<< "${GOOD_RATIOS}"
-IFS=',' read -ra SEEDS_ARRAY <<< "${AGENT_SEEDS// /}"
-
-# ==========================================
-# Step 0: Build all mixed memories (single-thread)
-# ==========================================
-mkdir -p "${DATA_DIR}/mixed_memories"
-for ratio in "${RATIOS_ARRAY[@]}"; do
-    ratio="${ratio// /}"
-    [[ -z "$ratio" ]] && continue
-
-    MIXED_MEMORY="${DATA_DIR}/mixed_memories/mixed_${TOTAL_MEMORY_SIZE}_good${ratio}.pt"
-    if [[ ! -f "${MIXED_MEMORY}" ]]; then
-        echo ""
-        echo "Creating mixed memory: total=${TOTAL_MEMORY_SIZE}, good_ratio=${ratio}%"
-        SUCCESS_PT="${SUCCESS_MEMORY}" FAILURE_PT="${FAILURE_MEMORY}" TOTAL_N="${TOTAL_MEMORY_SIZE}" GOOD_RATIO="${ratio}" MIX_SEED="${SEED}" OUTPUT_PT="${MIXED_MEMORY}" \
-            make_mixed_memory "${SUCCESS_MEMORY}" "${FAILURE_MEMORY}" "${TOTAL_MEMORY_SIZE}" "${ratio}" "${SEED}" "${MIXED_MEMORY}"
-    else
-        echo "Using existing mixed memory: ${MIXED_MEMORY}"
-    fi
 done
 
-# ==========================================
-# Step 1: Build job list and run in parallel
-# ==========================================
-IFS=',' read -ra GPU_ARR <<< "${GPUS}"
-if [[ ${#GPU_ARR[@]} -eq 0 ]]; then
-    echo "ERROR: GPUS is empty" >&2
-    exit 2
-fi
-NGPU=${#GPU_ARR[@]}
+echo "✓ All mixed memory banks ready"
 
+# ==========================================
+# Step 2: Build job list and run in parallel
+# ==========================================
+echo ""
+echo "=========================================="
+echo "Step 2: Running experiments in parallel..."
+echo "=========================================="
+
+# Build job list: (method, ratio, seed)
 jobs=()
-for ratio in "${RATIOS_ARRAY[@]}"; do
-    ratio="${ratio// /}"
-    [[ -z "$ratio" ]] && continue
-    for method in "${METHODS_ARRAY[@]}"; do
-        method="${method// /}"
-        [[ -z "$method" ]] && continue
-        for agent_seed in "${SEEDS_ARRAY[@]}"; do
-            agent_seed="${agent_seed// /}"
-            [[ -z "$agent_seed" ]] && continue
-            jobs+=("${method}|${ratio}|${agent_seed}")
+for seed in "${SEEDS_ARR[@]}"; do
+    [[ -z "$seed" ]] && continue
+    for ratio in "${RATIOS_ARR[@]}"; do
+        ratio="${ratio// /}"
+        [[ -z "$ratio" ]] && continue
+        for method in "${METHODS_ARR[@]}"; do
+            method="${method// /}"
+            [[ -z "$method" ]] && continue
+            jobs+=("${method}|${ratio}|${seed}")
         done
     done
 done
+
+njobs=${#jobs[@]}
+echo "Total jobs: $njobs"
 
 run_one() {
     local gpu="$1"
     local method="$2"
     local ratio="$3"
-    local agent_seed="$4"
-
-    MIXED_MEMORY="${DATA_DIR}/mixed_memories/mixed_${TOTAL_MEMORY_SIZE}_good${ratio}.pt"
-    if [[ ! -f "${MIXED_MEMORY}" ]]; then
-        echo "ERROR: Mixed memory not found: ${MIXED_MEMORY}" >&2
+    local seed="$4"
+    
+    local RUN_DIR="${LOGS_DIR}/${method}/good_${ratio}/seed_${seed}"
+    mkdir -p "$RUN_DIR"
+    
+    local MIXED_MEMORY="${MIXED_MEM_DIR}/mixed_${TOTAL_MEMORY_SIZE}_good${ratio}.pt"
+    
+    if [[ ! -f "$MIXED_MEMORY" ]]; then
+        echo "[ERROR] Memory not found: $MIXED_MEMORY"
         return 1
     fi
-
-    METHOD_DIR="${LOGS_DIR}/${method}/good_${ratio}/seed_${agent_seed}"
-    mkdir -p "${METHOD_DIR}"
-
-    # Pick model by method family:
+    
+    echo "[GPU ${gpu}] Running: method=${method} good_ratio=${ratio}% seed=${seed}"
+    
+    # Select model:
     # - bc* uses BASE model
     # - reflect* uses POST-TRAINED model
-    if [[ "${method}" == reflect* ]]; then
-        MODEL_PATH="${POST_MODEL_PATH}"
+    local model_path
+    if [[ "$method" == reflect* ]]; then
+        model_path="$POST_MODEL_PATH"
     else
-        MODEL_PATH="${BASE_MODEL_PATH}"
+        model_path="$BASE_MODEL_PATH"
     fi
-
-    echo "[GPU ${gpu}] Running: ${method} | good=${ratio}% | seed=${agent_seed} | total=${TOTAL_MEMORY_SIZE}"
-    CUDA_VISIBLE_DEVICES="${gpu}" python -u "${PROJECT_ROOT}/run-rom.py" \
-        --agent_type="${method}" \
-        --seed="${SEED}" \
-        --agent_seed="${agent_seed}" \
-        --n_trajs="${N_TRAJS}" \
-        --level="${LEVEL}" \
-        --max_steps=50 \
-        --model_path="${MODEL_PATH}" \
-        --load_4bit="${LOAD_4BIT}" \
-        --save_dir="${METHOD_DIR}" \
-        --romemo_init_memory_path="${MIXED_MEMORY}" \
-        --trace_jsonl=True \
+    
+    CUDA_VISIBLE_DEVICES=$gpu python run-rom.py \
+        --seed=$TEST_SEED \
+        --reset_seed_start=0 \
+        --n_trajs=$NUM_TRAJS \
+        --save_dir="$RUN_DIR" \
+        --start_traj_id=0 \
+        --start_board_id=$TEST_SEED \
+        --logging.online=False \
+        --agent_type="$method" \
+        --level="$LEVEL" \
+        --oracle_prob=0 \
         --save_images=False \
         --record=False \
-        --logging.use_wandb=False \
-        2>&1 | tee "${METHOD_DIR}/run.log"
+        --max_steps=$MAX_STEPS \
+        --agent_seed=$seed \
+        --model_path="$model_path" \
+        --load_4bit=$LOAD_4BIT \
+        --romemo_init_memory_path="$MIXED_MEMORY" \
+        --romemo_save_memory_path="$RUN_DIR/romemo_memory.pt" \
+        --trace_jsonl=True \
+        2>&1 | tee "$RUN_DIR/run.log"
 }
 
-echo ""
-echo "=========================================="
-echo "Running jobs in parallel..."
-echo "=========================================="
-echo "Total jobs: ${#jobs[@]} (methods × ratios × seeds)"
-echo "Workers:    ${NGPU} GPUs"
-
+# Parallel execution across GPUs
 pids=()
 labels=()
 fail=0
-njobs=${#jobs[@]}
 
 for gi in "${!GPU_ARR[@]}"; do
     gpu="${GPU_ARR[$gi]}"
     (
         idx="$gi"
         while [[ "$idx" -lt "$njobs" ]]; do
-            IFS='|' read -r method ratio agent_seed <<< "${jobs[$idx]}"
-            run_one "$gpu" "$method" "$ratio" "$agent_seed"
+            IFS='|' read -r method ratio seed <<< "${jobs[$idx]}"
+            run_one "$gpu" "$method" "$ratio" "$seed"
             idx=$((idx + NGPU))
         done
     ) &
     pids+=("$!")
     labels+=("gpu=${gpu}")
 done
+
+echo "Launched ${#pids[@]} GPU workers. Waiting..."
 
 for i in "${!pids[@]}"; do
     if ! wait "${pids[$i]}"; then
@@ -268,16 +284,15 @@ for i in "${!pids[@]}"; do
 done
 
 if [[ "$fail" -ne 0 ]]; then
-    echo "ERROR: Some jobs failed. Skipping aggregation." >&2
-    exit 1
+    echo "WARNING: Some jobs failed. Aggregating what we have..." >&2
 fi
 
 # ==========================================
-# Aggregate Results
+# Step 3: Aggregate Results
 # ==========================================
 echo ""
 echo "=========================================="
-echo "Aggregating Results..."
+echo "Step 3: Aggregating Results..."
 echo "=========================================="
 
 python -c "
@@ -305,12 +320,11 @@ for method_dir in sorted(logs_dir.iterdir()):
 
             ep_trace = seed_dir / 'traces' / 'episode_traces.jsonl'
             if not ep_trace.exists():
-                print(f'Warning: No traces found for {method} {ratio_dir.name} {seed_dir.name}')
+                print(f'  WARN: No traces at {ep_trace}')
                 continue
 
             episodes = [json.loads(ln) for ln in ep_trace.read_text().splitlines() if ln.strip()]
             if not episodes:
-                print(f'Warning: Empty traces for {method} {ratio_dir.name} {seed_dir.name}')
                 continue
 
             n_eps = len(episodes)
@@ -322,8 +336,8 @@ for method_dir in sorted(logs_dir.iterdir()):
             results.append({
                 'method': method,
                 'good_ratio': good_ratio,
-                'total_memory_size': int('${TOTAL_MEMORY_SIZE}'),
                 'agent_seed': agent_seed,
+                'total_memory_size': int('${TOTAL_MEMORY_SIZE}'),
                 'n_episodes': n_eps,
                 'success_rate': round(success_rate, 4),
                 'mean_steps': round(mean_steps, 2),
@@ -331,23 +345,121 @@ for method_dir in sorted(logs_dir.iterdir()):
                 'repeated_failure_rate': round(repeated_failure_rate, 4),
             })
 
-            print(f'{method:20s} | good={good_ratio:3d}% | seed={agent_seed:2d} | SR={success_rate:.2%} | Steps={mean_steps:.1f} | Loop={looping_rate:.2%} | RepFail={repeated_failure_rate:.2%}')
+df = pd.DataFrame(results)
+out_dir = logs_dir / '_aggregate'
+out_dir.mkdir(exist_ok=True)
 
-# Save results
-if results:
-    df = pd.DataFrame(results)
-    csv_path = logs_dir / 'results.csv'
-    df.to_csv(csv_path, index=False)
-    print(f'\\nResults saved to: {csv_path}')
+df.to_csv(out_dir / 'constraint_results.csv', index=False)
+print(f'Saved: {out_dir}/constraint_results.csv')
+
+# Summary by method and good_ratio
+if len(df) > 0:
+    summary = df.groupby(['method', 'good_ratio']).agg({
+        'success_rate': ['mean', 'std'],
+        'mean_steps': ['mean', 'std'],
+        'looping_rate': ['mean', 'std'],
+        'repeated_failure_rate': ['mean', 'std'],
+    }).round(4)
+    print()
+    print('Constraint Learning Summary:')
+    print(summary)
+"
+
+# ==========================================
+# Step 4: Generate Plot
+# ==========================================
+echo ""
+echo "Generating Constraint Learning Plot..."
+
+python -c "
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import pandas as pd
+from pathlib import Path
+
+root = Path('${LOGS_DIR}')
+csv_path = root / '_aggregate' / 'constraint_results.csv'
+if not csv_path.exists():
+    print('No results to plot')
+    exit(0)
+
+df = pd.read_csv(csv_path)
+if len(df) == 0:
+    print('Empty results')
+    exit(0)
+
+# Aggregate by method and good_ratio
+agg = df.groupby(['method', 'good_ratio']).agg({
+    'success_rate': ['mean', 'std'],
+    'looping_rate': ['mean', 'std'],
+    'repeated_failure_rate': ['mean', 'std'],
+}).reset_index()
+agg.columns = ['method', 'good_ratio', 'sr_mean', 'sr_std', 'loop_mean', 'loop_std', 'rep_fail_mean', 'rep_fail_std']
+
+methods = agg['method'].unique()
+colors = plt.cm.tab10.colors
+
+fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+# Plot 1: Success Rate vs Good Ratio
+ax1 = axes[0]
+for i, method in enumerate(methods):
+    sub = agg[agg['method'] == method]
+    ax1.errorbar(sub['good_ratio'], sub['sr_mean'], yerr=sub['sr_std'],
+                 marker='o', capsize=3, linewidth=2, markersize=6,
+                 color=colors[i % len(colors)], label=method)
+ax1.set_xlabel('Good Memory Ratio (%)', fontsize=11)
+ax1.set_ylabel('Success Rate', fontsize=11)
+ax1.set_title('Success Rate vs Good/Failure Mix', fontsize=12)
+ax1.set_xlim(15, 105)
+ax1.grid(True, alpha=0.3)
+ax1.legend(fontsize=8)
+
+# Plot 2: Looping Rate vs Good Ratio
+ax2 = axes[1]
+for i, method in enumerate(methods):
+    sub = agg[agg['method'] == method]
+    ax2.errorbar(sub['good_ratio'], sub['loop_mean'], yerr=sub['loop_std'],
+                 marker='s', capsize=3, linewidth=2, markersize=6,
+                 color=colors[i % len(colors)], label=method)
+ax2.set_xlabel('Good Memory Ratio (%)', fontsize=11)
+ax2.set_ylabel('Looping Rate', fontsize=11)
+ax2.set_title('Looping Rate vs Good/Failure Mix', fontsize=12)
+ax2.set_xlim(15, 105)
+ax2.grid(True, alpha=0.3)
+ax2.legend(fontsize=8)
+
+# Plot 3: Repeated Failure Rate vs Good Ratio
+ax3 = axes[2]
+for i, method in enumerate(methods):
+    sub = agg[agg['method'] == method]
+    ax3.errorbar(sub['good_ratio'], sub['rep_fail_mean'], yerr=sub['rep_fail_std'],
+                 marker='^', capsize=3, linewidth=2, markersize=6,
+                 color=colors[i % len(colors)], label=method)
+ax3.set_xlabel('Good Memory Ratio (%)', fontsize=11)
+ax3.set_ylabel('Repeated Failure Rate', fontsize=11)
+ax3.set_title('Repeated Failures vs Good/Failure Mix', fontsize=12)
+ax3.set_xlim(15, 105)
+ax3.grid(True, alpha=0.3)
+ax3.legend(fontsize=8)
+
+plt.tight_layout()
+
+out_dir = root / '_aggregate' / 'plots'
+out_dir.mkdir(exist_ok=True)
+plt.savefig(out_dir / 'constraint_learning.png', dpi=150, bbox_inches='tight')
+print(f'Saved: {out_dir}/constraint_learning.png')
 "
 
 echo ""
 echo "=========================================="
-echo "Pillar 4 Experiment Complete!"
+echo "✅ Pillar 4: Constraint Learning Complete!"
 echo "=========================================="
-echo "Results: ${LOGS_DIR}/results.csv"
+echo "Results:  ${LOGS_DIR}/_aggregate/constraint_results.csv"
+echo "Plots:    ${LOGS_DIR}/_aggregate/plots/constraint_learning.png"
 echo ""
-echo "Key metrics to compare:"
-echo "  - looping_rate: Should DECREASE with failure memory"
-echo "  - repeated_failure_rate: Should DECREASE with failure memory"
-echo "  - success_rate: May INCREASE if fewer constraint violations"
+echo "Key hypothesis:"
+echo "  - As good_ratio ↓ (more failure memory), looping_rate should ↓"
+echo "  - Repeated_failure_rate should also ↓ with more failure memory"
+echo "  - Success_rate may INCREASE or stay stable if failure memory helps avoid constraint violations"
