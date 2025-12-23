@@ -10,3 +10,5 @@ MUJOCO_LOG.TXT
 *.xml
 
 *.pdf
+
+datasets/

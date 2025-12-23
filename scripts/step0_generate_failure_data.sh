@@ -8,7 +8,32 @@
 #
 # Philosophy: "The Simulator is the Compiler. The Oracle is the Linter."
 
-set -e
+export MUJOCO_GL=egl 
+export PYOPENGL_PLATFORM=egl
+
+# Fix for LLVM command-line option conflict between triton and bitsandbytes
+export TRITON_PTXAS_PATH=""
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+
+# Critical: Add NVIDIA library path so PyTorch can find CUDA
+export LD_LIBRARY_PATH=/usr/local/nvidia/lib64:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+
+# Force bitsandbytes to use CUDA 11.7 libraries (matching PyTorch cu117)
+export BNB_CUDA_VERSION=117
+
+# Performance optimizations
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+export TRANSFORMERS_VERBOSITY=error  # Reduce transformers logging
+export TOKENIZERS_PARALLELISM=false  # Avoid tokenizer warnings
+
+# Use HuggingFace mirror for China (better than unstable proxy)
+export HF_ENDPOINT=https://hf-mirror.com
+
+# Use a shared HuggingFace cache by default to avoid re-downloading on different machines.
+# Override by exporting HF_HOME/TRANSFORMERS_CACHE before running.
+export HF_HOME="${HF_HOME:-/share/project/hf_cache}"
+export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME/transformers}"
+mkdir -p "$HF_HOME" "$TRANSFORMERS_CACHE"
 
 # Configuration
 export PYTHONUNBUFFERED=1

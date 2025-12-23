@@ -50,7 +50,7 @@ def main():
     parser.add_argument("--model_path", type=str, required=True)
     parser.add_argument("--output_pt", type=str, required=True, help="Final merged memory path")
     parser.add_argument("--level", type=str, default="all")
-    parser.add_argument("--seed_start", type=int, default=0, help="Base seed")
+    parser.add_argument("--seed_start", type=int, default=1000000, help="Base seed")
     parser.add_argument("--output_dir_base", type=str, default="datasets/parallel_run", help="Base dir for temp output")
     
     # Pass-through args that might be needed
@@ -113,7 +113,9 @@ def main():
             f"--romemo_save_memory_path={part_pt}",
             f"--level={args.level}",
             f"--record=False",
-            f"--save_images=False",
+            f"--oracle_prob=1.0",
+            f"--imagine_future_steps=5",
+            f"--save_images=True",
             f"--logging.online={args.logging_online}",
             f"--load_4bit={args.load_4bit}",
             f"--model_path={args.model_path}",

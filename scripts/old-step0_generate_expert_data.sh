@@ -1,7 +1,6 @@
 #!/bin/bash
-# Step 0: Generate Expert Data (Parallelized)
+# Step 0: Generate Expert Data (Run this first!)
 # We need ~2500 In-Domain and ~2000 OOD trajectories.
-
 export MUJOCO_GL=egl 
 export PYOPENGL_PLATFORM=egl
 
@@ -29,46 +28,38 @@ export HF_HOME="${HF_HOME:-/share/project/hf_cache}"
 export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME/transformers}"
 mkdir -p "$HF_HOME" "$TRANSFORMERS_CACHE"
 
-
-# Set the number of parallel jobs.
-# Adjust this based on your GPU count and VRAM.
-# - If you have 8 GPUs, set N_JOBS=8.
-# - If you have 1 A100 (80GB), set N_JOBS=4 (each 13B model takes ~10-12GB in 4bit).
-N_JOBS=8
-
-# Detect available GPUs (optional, comma separated)
-GPUS="0,1,2,3,4,5,6,7"
-# GPUS="0"
-# Leave empty to auto-detect from CUDA_VISIBLE_DEVICES
-# GPUS=""
-
-echo "Generating In-Domain Expert Data (2500 trajs) with ${N_JOBS} jobs..."
-python scripts/run_parallel_expert.py \
-  --n_jobs=${N_JOBS} \
-  --gpus="${GPUS}" \
-  --total_trajs=2500 \
+# 1. Generate In-Domain (Peg Insertion / Assembly)
+# We use agent_type="expert_romemo_wb" to record successful trajectories to memory.
+# Note: This takes a long time. Run on parallel GPUs if possible.
+echo "Generating In-Domain Expert Data (2500 trajs)..."
+python run-rom.py \
   --agent_type="expert_romemo_wb" \
-  --output_pt="data/raw_expert_indomain.pt" \
+  --n_trajs=2500 \
+  --romemo_save_memory_path="data/raw_expert_indomain.pt" \
   --level="all" \
-  --seed_start=1000001 \
-  --output_dir_base="datasets/parallel_indomain" \
+  --record=False \
+  --logging.online=False \
   --model_path='yunhaif/ReflectVLM-llava-v1.5-13b-post-trained' \
-  --load_4bit=True \
-  --logging_online=False
+  --load_4bit=True
 
-echo "Generating OOD Expert Data (2000 trajs) with ${N_JOBS} jobs..."
-# Note: large seed offset to ensure OOD
-python scripts/run_parallel_expert.py \
-  --n_jobs=${N_JOBS} \
-  --gpus="${GPUS}" \
-  --total_trajs=2000 \
+# 2. Generate OOD Data (Distractors)
+# HACK: To simulate OOD, we can either:
+# a) Run a different task (if available)
+# b) Run the SAME task but with a different --level or visual randomized textures/camera.
+# For Reflect-VLM simple setup, let's assume we run "Hard" level as OOD for "Medium", 
+# or just generate more data with different seeds that we will label as 'noise'.
+# BETTER HACK: Run with a randomized agent that occasionally succeeds, or just 
+# different seeds.
+# For this script, let's just generate MORE data and treat it as the OOD pool 
+# (simulating 'other episodes' that are not relevant to the current specific 100 test seeds).
+echo "Generating OOD Expert Data (2000 trajs)..."
+python run-rom.py \
   --agent_type="expert_romemo_wb" \
-  --output_pt="data/raw_expert_ood.pt" \
+  --n_trajs=2000 \
+  --seed=99999 \
+  --romemo_save_memory_path="data/raw_expert_ood.pt" \
   --level="all" \
-  --seed_start=2000001 \
-  --output_dir_base="datasets/parallel_ood" \
+  --record=False \
+  --logging.online=False \
   --model_path='yunhaif/ReflectVLM-llava-v1.5-13b-post-trained' \
-  --load_4bit=True \
-  --logging_online=False
-
-echo "Done. Data saved to data/raw_expert_indomain.pt and data/raw_expert_ood.pt"
+  --load_4bit=True
