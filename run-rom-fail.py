@@ -559,6 +559,7 @@ def main(_):
                                         fail_tag=diagnosis["fail_tag"],
                                         history=copy.deepcopy(history),
                                         oracle_state_context=diagnosis["oracle_state_context"],
+                                        oracle_action=oracle_action,  # Correct action!
                                     )
                                 except TypeError:
                                     try:
@@ -607,6 +608,7 @@ def main(_):
                                     fail_tag=diagnosis["fail_tag"],
                                     history=copy.deepcopy(history),
                                     oracle_state_context=diagnosis["oracle_state_context"],
+                                    oracle_action=oracle_action,  # Correct action!
                                 )
                             except TypeError:
                                 # Fallback for older signature

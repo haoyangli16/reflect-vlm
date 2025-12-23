@@ -463,6 +463,7 @@ class RoMemoDiscreteAgent:
         fail_tag: Optional[str] = None,
         history: Optional[List[str]] = None,
         oracle_state_context: Optional[str] = None,
+        oracle_action: Optional[str] = None,
     ):
         """
         Align with RoMemo update_on_failure: write an Experience after outcome is observed.
@@ -472,6 +473,7 @@ class RoMemoDiscreteAgent:
         - fail_tag: explicit constraint tag from Oracle diagnosis (e.g., "BLOCKED_BY_PREDECESSOR")
         - history: full action history for this episode (for context)
         - oracle_state_context: raw Oracle state string for debugging
+        - oracle_action: the CORRECT action the agent should have taken (for learning corrections)
         """
         if not self.writeback_enabled or self.store.writeback is None:
             return {}
@@ -518,6 +520,8 @@ class RoMemoDiscreteAgent:
                 self._pending.extra_metrics["history"] = list(history)
             if oracle_state_context is not None:
                 self._pending.extra_metrics["oracle_state_context"] = str(oracle_state_context)
+            if oracle_action is not None:
+                self._pending.extra_metrics["oracle_action"] = str(oracle_action)
 
         if fail:
             self.store.repeat_fail_counts[(ctx_hash, a)] = int(
@@ -533,6 +537,7 @@ class RoMemoDiscreteAgent:
                         "context_hash": ctx_hash,
                         "fail_tag": inferred_fail_tag,
                         "oracle_state_context": oracle_state_context,
+                        "correct_action": oracle_action,  # What the agent SHOULD have done
                     },
                 )
             else:
