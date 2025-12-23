@@ -172,6 +172,12 @@ class RoMemoDiscreteConfig:
     k: int = 20
     alpha: float = 0.7
     lambda_fail: float = 1.5
+    # When a retrieved memory is a failure and contains an oracle correction action,
+    # boost that oracle action by this multiplier (averaged over retrieved items).
+    lambda_correct: float = 1.0
+    # Optionally treat certain failure tags as "hard constraints" and penalize
+    # the taken action more aggressively.
+    lambda_fail_hard: float = 2.5
     beta_failrate: float = 0.5
     beta_repeat: float = 0.2
     max_mem_candidates: int = 5
@@ -244,6 +250,20 @@ class RoMemoDiscreteAgent:
         # the base policy even after repeated failures, causing unrecoverable loops.
         scores: Dict[str, float] = {}
         stats: Dict[str, Dict[str, Any]] = {}
+        # Separate accumulator for oracle-correction boosts.
+        corr_stats: Dict[str, Dict[str, Any]] = {}
+
+        # Failure tags that should be treated as hard constraints (stronger veto).
+        hard_tags = {
+            "BLOCKED_BY_PREDECESSOR",
+            "BLOCKED_BY_SUCCESSOR",
+            "BAD_PLACEMENT",
+            "NEEDS_REORIENT",
+            "HAND_FULL",
+            "GRASP_FAILED",
+            "INSERT_TIMEOUT",
+        }
+
         for exp, dist in zip(ret.experiences, ret.distances.tolist()):
             dec = (exp.extra_metrics or {}).get("decision", {})
             action = None
@@ -255,7 +275,20 @@ class RoMemoDiscreteAgent:
                 continue
 
             sim = _dist_to_sim(float(dist))
-            w = 1.0 if bool(exp.success) else -float(self.cfg.lambda_fail)
+            # Determine fail severity via fail_tag when available.
+            tag = getattr(exp, "fail_tag", None)
+            if tag is None:
+                tag = (exp.extra_metrics or {}).get("fail_tag", None)
+
+            if bool(exp.success):
+                w = 1.0
+            else:
+                w = (
+                    -float(self.cfg.lambda_fail_hard)
+                    if str(tag) in hard_tags
+                    else -float(self.cfg.lambda_fail)
+                )
+
             st = stats.get(str(action))
             if st is None:
                 st = {"n": 0, "n_succ": 0, "n_fail": 0, "sim_sum": 0.0, "signed_sim_sum": 0.0}
@@ -268,10 +301,42 @@ class RoMemoDiscreteAgent:
             if bool(exp.fail):
                 st["n_fail"] += 1
 
+            # NEW: "Correction" signal from failure memories.
+            # If memory says action_taken failed, and provides oracle_action (what to do instead),
+            # boost that oracle action so it can be selected even if base policy didn't propose it.
+            if bool(exp.fail):
+                oracle_action = None
+                if exp.extra_metrics:
+                    oracle_action = exp.extra_metrics.get("oracle_action", None)
+                if oracle_action is not None:
+                    corr = str(oracle_action).strip()
+                    if corr:
+                        cst = corr_stats.get(corr)
+                        if cst is None:
+                            cst = {"n_oracle": 0, "sim_sum": 0.0}
+                            corr_stats[corr] = cst
+                        cst["n_oracle"] += 1
+                        cst["sim_sum"] += float(sim)
+
         for a, st in stats.items():
             n = max(1, int(st["n"]))
             st["fail_rate"] = float(int(st["n_fail"]) / n)
             scores[a] = float(st.get("signed_sim_sum", 0.0)) / float(n)
+
+        # Apply oracle-correction boosts (average, not sum).
+        for a, cst in corr_stats.items():
+            n_or = max(1, int(cst.get("n_oracle", 0)))
+            bonus = float(self.cfg.lambda_correct) * float(cst.get("sim_sum", 0.0)) / float(n_or)
+            scores[a] = float(scores.get(a, 0.0)) + float(bonus)
+            # Attach correction stats for debugging (and so downstream can see it's boosted).
+            st = stats.get(a)
+            if st is None:
+                st = {"n": 0, "n_succ": 0, "n_fail": 0, "sim_sum": 0.0, "signed_sim_sum": 0.0}
+                stats[a] = st
+            st["n_oracle"] = int(cst.get("n_oracle", 0))
+            # For actions that only appear as oracle corrections, define fail_rate=0.
+            if "fail_rate" not in st:
+                st["fail_rate"] = float(0.0)
         return scores, stats
 
     def _feasible_actions(self) -> Optional[set[str]]:
@@ -436,6 +501,7 @@ class RoMemoDiscreteAgent:
                     "success": bool(e.success),
                     "fail": bool(e.fail),
                     "fail_tag": getattr(e, "fail_tag", None),
+                    "oracle_action": (e.extra_metrics or {}).get("oracle_action", None),
                 }
                 for e, d in zip(ret.experiences, ret.distances.tolist())
             ][:10],
