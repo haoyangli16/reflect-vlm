@@ -114,7 +114,7 @@ run_one() {
         --max_steps=$MAX_STEPS \
         --agent_seed=$seed \
         --model_path="$BASE_MODEL_PATH" \
-        --load_4bit=True \
+        --load_4bit \
         --romemo_init_memory_path="$mem_path" \
         --romemo_save_memory_path="$RUN_DIR/romemo_memory.pt"
 }

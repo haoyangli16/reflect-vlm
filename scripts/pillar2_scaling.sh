@@ -136,7 +136,7 @@ run_one() {
         --max_steps=$MAX_STEPS \
         --agent_seed=$seed \
         --model_path=\"$model_path\" \
-        --load_4bit=True"
+        --load_4bit"
     
     # Add RoMemo args if using memory
     if [[ "$size" != "0" ]]; then

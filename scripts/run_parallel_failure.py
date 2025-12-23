@@ -182,7 +182,7 @@ def main():
             "--oracle_prob=0.0",  # No oracle help - let agent make mistakes
             "--save_images=False",
             f"--logging.online={args.logging_online}",
-            f"--load_4bit={args.load_4bit}",
+            "--load_4bit" if args.load_4bit.lower() in ("true", "1", "yes") else "--noload_4bit",
             f"--model_path={args.model_path}",
             f"--save_dir={job_dir}",
             f"--start_traj_id={start_traj}",

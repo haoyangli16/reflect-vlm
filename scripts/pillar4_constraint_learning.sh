@@ -232,6 +232,14 @@ run_one() {
         model_path="$BASE_MODEL_PATH"
     fi
     
+    # Build quantization flag (use --load_4bit for true, --noload_4bit for false)
+    local quant_flag=""
+    if [[ "$LOAD_4BIT" == "True" || "$LOAD_4BIT" == "true" || "$LOAD_4BIT" == "1" ]]; then
+        quant_flag="--load_4bit"
+    else
+        quant_flag="--noload_4bit --noload_8bit"
+    fi
+    
     CUDA_VISIBLE_DEVICES=$gpu python run-rom.py \
         --seed=$TEST_SEED \
         --reset_seed_start=0 \
@@ -248,7 +256,7 @@ run_one() {
         --max_steps=$MAX_STEPS \
         --agent_seed=$seed \
         --model_path="$model_path" \
-        --load_4bit=$LOAD_4BIT \
+        $quant_flag \
         --romemo_init_memory_path="$MIXED_MEMORY" \
         --romemo_save_memory_path="$RUN_DIR/romemo_memory.pt" \
         --trace_jsonl=True \
