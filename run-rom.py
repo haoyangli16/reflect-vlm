@@ -107,6 +107,47 @@ FLAGS_DEF = define_flags(
         "integer",
         "RoMemo: minimum candidates from symbolic filter before fallback to visual.",
     ),
+    # NEW: Principle-based learning flags
+    romemo_use_principles=(
+        False,
+        "bool",
+        "RoMemo: enable principle extraction and usage for learning from failures.",
+    ),
+    romemo_reflector_provider=(
+        None,
+        "string",
+        "RoMemo: VLM provider for reflector ('openai', 'gemini', 'qwen', or None for rule-based).",
+    ),
+    romemo_reflector_model=(
+        None,
+        "string",
+        "RoMemo: VLM model for reflector (e.g., 'gpt-5.1', 'gemini-3-pro-preview').",
+    ),
+    romemo_principle_store_path=(
+        None,
+        "string",
+        "RoMemo: path to save/load principle store (JSON or .pt file).",
+    ),
+    romemo_max_principles_in_prompt=(
+        3,
+        "integer",
+        "RoMemo: max principles to include in action prompt.",
+    ),
+    romemo_min_principle_confidence=(
+        0.3,
+        "float",
+        "RoMemo: minimum confidence for principle retrieval.",
+    ),
+    romemo_principle_violation_penalty=(
+        2.0,
+        "float",
+        "RoMemo: penalty when proposed action violates a known principle.",
+    ),
+    romemo_principle_boost=(
+        1.0,
+        "float",
+        "RoMemo: boost for actions suggested by principles.",
+    ),
     trace_jsonl=(True, "bool", "Write step/episode traces as JSONL."),
     save_images=(True, "bool", "Save trajectory images to disk."),
     # MCTS baseline
@@ -392,6 +433,19 @@ def main(_):
             retrieval_mode=str(FLAGS.romemo_retrieval_mode),
             symbolic_weight=float(FLAGS.romemo_symbolic_weight),
             min_symbolic_candidates=int(FLAGS.romemo_min_symbolic_candidates),
+            # NEW: Principle-based learning
+            use_principles=bool(FLAGS.romemo_use_principles),
+            reflector_provider=FLAGS.romemo_reflector_provider
+            if FLAGS.romemo_reflector_provider
+            else None,
+            reflector_model=FLAGS.romemo_reflector_model if FLAGS.romemo_reflector_model else None,
+            principle_store_path=FLAGS.romemo_principle_store_path
+            if FLAGS.romemo_principle_store_path
+            else None,
+            max_principles_in_prompt=int(FLAGS.romemo_max_principles_in_prompt),
+            min_principle_confidence=float(FLAGS.romemo_min_principle_confidence),
+            principle_violation_penalty=float(FLAGS.romemo_principle_violation_penalty),
+            principle_boost=float(FLAGS.romemo_principle_boost),
         )
         romemo_store = RoMemoStore(
             task="assembly",
@@ -978,6 +1032,23 @@ def main(_):
             print(f"[romemo] saved memory to {FLAGS.romemo_save_memory_path}")
         except Exception as e:
             print(f"[romemo] failed to save memory: {e}")
+
+    # Save learned principles if principle learning was enabled
+    if FLAGS.romemo_use_principles and FLAGS.romemo_principle_store_path:
+        # Try to save principles from the agent
+        try:
+            # Get the agent (may be wrapped)
+            if "agent" in dir() and hasattr(agent, "save_principles"):
+                agent.save_principles(str(FLAGS.romemo_principle_store_path))
+                print(f"[romemo] saved principles to {FLAGS.romemo_principle_store_path}")
+
+                # Log principle stats
+                if hasattr(agent, "get_principle_stats"):
+                    stats = agent.get_principle_stats()
+                    print(f"[romemo] principle stats: {stats}")
+                    wandb_logger.log({"principle_stats": stats})
+        except Exception as e:
+            print(f"[romemo] failed to save principles: {e}")
 
     os.remove(xml_filename)
 

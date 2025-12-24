@@ -16,13 +16,19 @@ NEW: Supports state-query based retrieval for better task relevance.
 - Visual retrieval: original behavior, uses image embeddings
 - Symbolic retrieval: filters by discrete task state before ranking
 - Hybrid retrieval: combines both approaches
+
+NEW (Phase 2): Principle-based learning from failures.
+- On failure: generates reflection and extracts reusable principles
+- At action time: retrieves applicable principles to guide decisions
+- Principles are abstract rules that transfer across task instances
 """
 
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
+from pathlib import Path
 
 import numpy as np
 
@@ -32,6 +38,7 @@ try:
     from romemo.memory.schema import Experience, MemoryBank
     from romemo.memory.retrieve import Retriever, RetrievalResult
     from romemo.memory.writeback import WritebackConfig, WritebackPolicy
+    from romemo.memory.principle import Principle, PrincipleStore
 except Exception as e:  # pragma: no cover
     raise ImportError(
         "Failed to import romemo. In your reflectvlm env run:\n"
@@ -39,6 +46,17 @@ except Exception as e:  # pragma: no cover
         "so `import romemo` works.\n"
         f"Original error: {e}"
     )
+
+# Try to import Reflector for principle extraction
+try:
+    from roboworld.agent.reflector import Reflector, ReflectionInput, FAIL_TAG_DESCRIPTIONS
+
+    HAS_REFLECTOR = True
+except ImportError:
+    HAS_REFLECTOR = False
+    Reflector = None
+    ReflectionInput = None
+    FAIL_TAG_DESCRIPTIONS = {}
 
 
 # =========================================================================
@@ -354,6 +372,32 @@ class RoMemoDiscreteConfig:
     # Minimum candidates before falling back to visual retrieval
     min_symbolic_candidates: int = 5
 
+    # =========================================================================
+    # NEW (Phase 2): Principle-based learning configuration
+    # =========================================================================
+
+    # Enable principle extraction and usage
+    use_principles: bool = False
+
+    # Reflector VLM provider for generating reflections ("openai", "gemini", "qwen", None)
+    # If None, uses rule-based fallback (no API calls)
+    reflector_provider: Optional[str] = None
+    reflector_model: Optional[str] = None
+
+    # Principle retrieval settings
+    max_principles_in_prompt: int = 3  # Max principles to include in action prompt
+    min_principle_confidence: float = 0.3  # Minimum confidence for principle retrieval
+
+    # Principle penalty settings
+    # When a proposed action violates a known principle, apply this penalty
+    principle_violation_penalty: float = 2.0
+
+    # When a principle suggests an alternative action, boost it by this amount
+    principle_boost: float = 1.0
+
+    # Path to save/load principle store (optional)
+    principle_store_path: Optional[str] = None
+
 
 class RoMemoDiscreteAgent:
     """
@@ -365,6 +409,10 @@ class RoMemoDiscreteAgent:
     - "visual": original behavior, uses image embeddings
     - "symbolic": filters by discrete task state before ranking
     - "hybrid": combines both approaches
+
+    NEW (Phase 2): Principle-based learning
+    - On failure: reflects and extracts reusable principles
+    - At action time: retrieves applicable principles to guide decisions
     """
 
     def __init__(
@@ -420,6 +468,254 @@ class RoMemoDiscreteAgent:
 
         # trace payload compatible with run.py logging
         self.last_trace: Dict[str, Any] = {}
+
+        # =========================================================================
+        # NEW (Phase 2): Principle-based learning
+        # =========================================================================
+        self.use_principles = bool(self.cfg.use_principles)
+        self.principle_store: Optional[PrincipleStore] = None
+        self.reflector: Optional[Reflector] = None
+        self._action_history: List[str] = []  # Track action history for reflection
+        self._last_image: Optional[np.ndarray] = None  # Cache last image for reflection
+
+        if self.use_principles:
+            self._init_principle_system()
+
+    def _init_principle_system(self) -> None:
+        """Initialize principle store and reflector."""
+        # Initialize principle store
+        self.principle_store = PrincipleStore(name=f"principles_{self.task}")
+
+        # Try to load existing principles
+        if self.cfg.principle_store_path:
+            path = Path(self.cfg.principle_store_path)
+            if path.exists():
+                try:
+                    if path.suffix == ".pt":
+                        self.principle_store = PrincipleStore.load_pt(path)
+                    else:
+                        self.principle_store = PrincipleStore.load(path)
+                    print(f"[RoMemo] Loaded {len(self.principle_store)} principles from {path}")
+                except Exception as e:
+                    print(f"[RoMemo] Warning: Failed to load principles: {e}")
+
+        # Initialize reflector
+        if HAS_REFLECTOR:
+            try:
+                if self.cfg.reflector_provider:
+                    # Use VLM-based reflector
+                    self.reflector = Reflector.create(
+                        provider=self.cfg.reflector_provider,
+                        model=self.cfg.reflector_model,
+                        mode="oracle_guided",
+                        verbose=False,
+                    )
+                    print(f"[RoMemo] VLM Reflector initialized ({self.cfg.reflector_provider})")
+                else:
+                    # Use rule-based reflector (no API calls)
+                    self.reflector = Reflector(mode="oracle_guided", verbose=False)
+                    print("[RoMemo] Rule-based Reflector initialized")
+            except Exception as e:
+                print(f"[RoMemo] Warning: Failed to initialize reflector: {e}")
+                self.reflector = Reflector(mode="oracle_guided", verbose=False)
+        else:
+            print("[RoMemo] Warning: Reflector not available, principles disabled")
+            self.use_principles = False
+
+        print(
+            f"[RoMemo] Principle-based learning {'enabled' if self.use_principles else 'disabled'}"
+        )
+
+    def _get_applicable_principles(
+        self,
+        action_type: str,
+        symbolic_state: Optional[Dict[str, Any]] = None,
+    ) -> List[Principle]:
+        """
+        Retrieve principles applicable to the current context.
+
+        Args:
+            action_type: Type of action being considered ("pick", "insert", etc.)
+            symbolic_state: Current symbolic state
+
+        Returns:
+            List of applicable principles sorted by confidence
+        """
+        if not self.use_principles or self.principle_store is None:
+            return []
+
+        # Retrieve by action type
+        principles = self.principle_store.retrieve(
+            action_type=action_type,
+            min_confidence=float(self.cfg.min_principle_confidence),
+            top_k=int(self.cfg.max_principles_in_prompt),
+        )
+
+        return principles
+
+    def _format_principles_for_prompt(self, principles: List[Principle]) -> str:
+        """Format principles as text for inclusion in VLM prompt."""
+        if not principles:
+            return ""
+
+        lines = []
+        for i, p in enumerate(principles, 1):
+            conf_str = "HIGH" if p.confidence > 0.7 else "MEDIUM" if p.confidence > 0.4 else "LOW"
+            lines.append(f"{i}. [{conf_str}] {p.content}")
+
+        return "\n".join(lines)
+
+    def _check_principle_violations(
+        self,
+        proposed_action: str,
+        principles: List[Principle],
+        symbolic_state: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[float, Optional[str]]:
+        """
+        Check if the proposed action violates any known principles.
+
+        Returns:
+            Tuple of (penalty, suggested_alternative_action)
+        """
+        if not principles:
+            return 0.0, None
+
+        penalty = 0.0
+        suggested_action = None
+
+        action_type = self._extract_action_type(proposed_action)
+
+        for principle in principles:
+            # Check for action type match
+            if action_type not in principle.action_types:
+                continue
+
+            # Check for trigger condition matches
+            if symbolic_state and principle.trigger_conditions:
+                # Check specific conditions
+                triggers = principle.trigger_conditions
+
+                # Example: "piece_has_dependencies" and trying to insert
+                if "piece_has_dependencies" in triggers and action_type == "insert":
+                    # This principle warns about dependency issues
+                    # Check if we might be violating it
+                    if symbolic_state.get("num_remaining", 0) > 1:
+                        # Multiple pieces remaining - dependency might matter
+                        penalty += float(self.cfg.principle_violation_penalty) * 0.5
+
+                # "gripper_occupied" and trying to pick
+                if "gripper_occupied" in triggers and action_type == "pick":
+                    if symbolic_state.get("is_holding", False):
+                        penalty += float(self.cfg.principle_violation_penalty)
+
+                # "piece_not_upright" and trying to insert
+                if "piece_not_upright" in triggers and action_type == "insert":
+                    # This principle says to reorient first
+                    # Suggest reorient as alternative
+                    target = proposed_action.split()[-1] if " " in proposed_action else None
+                    if target:
+                        suggested_action = f"reorient {target}"
+                        penalty += float(self.cfg.principle_violation_penalty)
+
+        return penalty, suggested_action
+
+    def _extract_action_type(self, action: str) -> str:
+        """Extract action type from action string."""
+        action = str(action).strip().lower()
+        if action == "done":
+            return "done"
+        elif action.startswith("pick up"):
+            return "pick"
+        elif action.startswith("insert"):
+            return "insert"
+        elif action.startswith("reorient"):
+            return "reorient"
+        elif action.startswith("put down"):
+            return "putdown"
+        return "unknown"
+
+    def _reflect_on_failure(
+        self,
+        failed_action: str,
+        fail_tag: str,
+        oracle_action: Optional[str],
+        symbolic_state: Optional[Dict[str, Any]],
+        image: Optional[np.ndarray] = None,
+    ) -> Optional[Principle]:
+        """
+        Generate reflection on failure and extract principle.
+
+        Args:
+            failed_action: The action that failed
+            fail_tag: Failure type tag
+            oracle_action: The correct action (if known)
+            symbolic_state: Current symbolic state
+            image: Current observation image
+
+        Returns:
+            New or updated Principle, or None if reflection failed
+        """
+        if not self.use_principles or self.reflector is None or self.principle_store is None:
+            return None
+
+        try:
+            # Build reflection input
+            input_data = ReflectionInput(
+                failed_action=failed_action,
+                fail_tag=fail_tag,
+                oracle_action=oracle_action,
+                symbolic_state=symbolic_state or {},
+                action_history=self._action_history[-10:],
+                experience_id=f"exp_{self._last_context_hash or 'unknown'}",
+                image=image,
+            )
+
+            # Generate reflection
+            output = self.reflector.reflect(input_data)
+
+            if output and output.general_principle:
+                # Update principle store
+                pid = self.principle_store.update_from_reflection(
+                    output.to_dict(),
+                    input_data.experience_id,
+                )
+
+                # Return the updated principle
+                principle = self.principle_store.get(pid)
+                if principle:
+                    print(f"[RoMemo] Learned principle: {principle.content[:60]}...")
+                    return principle
+
+        except Exception as e:
+            print(f"[RoMemo] Warning: Reflection failed: {e}")
+
+        return None
+
+    def save_principles(self, path: Optional[str] = None) -> None:
+        """Save principle store to file."""
+        if self.principle_store is None:
+            return
+
+        save_path = Path(path or self.cfg.principle_store_path or "principles.json")
+        try:
+            if save_path.suffix == ".pt":
+                self.principle_store.save_pt(save_path)
+            else:
+                self.principle_store.save(save_path)
+            print(f"[RoMemo] Saved {len(self.principle_store)} principles to {save_path}")
+        except Exception as e:
+            print(f"[RoMemo] Warning: Failed to save principles: {e}")
+
+    def get_principle_stats(self) -> Dict[str, Any]:
+        """Get statistics about learned principles."""
+        if self.principle_store is None:
+            return {"enabled": False}
+
+        stats = self.principle_store.get_stats()
+        stats["enabled"] = True
+        if self.reflector:
+            stats["reflector_stats"] = self.reflector.get_stats()
+        return stats
 
     def set_env(self, env) -> None:
         self.env = env
@@ -571,6 +867,8 @@ class RoMemoDiscreteAgent:
         scores: Dict[str, float],
         stats: Dict[str, Dict[str, Any]],
         ctx_hash: str,
+        principles: Optional[List[Principle]] = None,
+        symbolic_state: Optional[Dict[str, Any]] = None,
     ):
         cand = {str(base_action)}
         top_mem = sorted(scores.items(), key=lambda x: x[1], reverse=True)[
@@ -591,16 +889,46 @@ class RoMemoDiscreteAgent:
         if max_mem < 1e-6:
             max_mem = 1.0
 
+        # NEW: Calculate principle-based adjustments
+        principle_penalties: Dict[str, float] = {}
+        principle_suggested: Optional[str] = None
+
+        if principles and self.use_principles:
+            for a in cand:
+                penalty, suggested = self._check_principle_violations(a, principles, symbolic_state)
+                principle_penalties[a] = penalty
+                if suggested and suggested not in cand:
+                    # Add principle-suggested alternative to candidates
+                    if feasible is None or suggested in feasible:
+                        cand.add(suggested)
+                        raw_mem_scores[suggested] = 0.0  # No memory evidence
+                        principle_suggested = suggested
+
         ranked: List[Tuple[str, float]] = []
         for a in cand:
             base_prior = 1.0 if a == str(base_action) else 0.0
-            mem = raw_mem_scores[a] / max_mem
+            mem = raw_mem_scores.get(a, 0.0) / max_mem
             fail_rate = float(stats.get(a, {}).get("fail_rate", 0.0))
             rep = int(self.store.repeat_fail_counts.get((ctx_hash, a), 0))
             risk = float(self.cfg.beta_failrate) * fail_rate + float(self.cfg.beta_repeat) * float(
                 rep
             )
-            s = float(self.cfg.alpha) * base_prior + float(1.0 - self.cfg.alpha) * mem - risk
+
+            # NEW: Apply principle-based penalties
+            principle_risk = float(principle_penalties.get(a, 0.0))
+
+            # NEW: Boost principle-suggested actions
+            principle_bonus = 0.0
+            if a == principle_suggested:
+                principle_bonus = float(self.cfg.principle_boost)
+
+            s = (
+                float(self.cfg.alpha) * base_prior
+                + float(1.0 - self.cfg.alpha) * mem
+                - risk
+                - principle_risk
+                + principle_bonus
+            )
 
             # HACK: Penalize "done" if base agent didn't propose it
             if a == "done" and str(base_action) != "done":
@@ -608,9 +936,15 @@ class RoMemoDiscreteAgent:
             ranked.append((a, s))
         ranked.sort(key=lambda x: x[1], reverse=True)
         chosen = ranked[0][0] if ranked else str(base_action)
-        return chosen, ranked, top_mem
+        return chosen, ranked, top_mem, principle_suggested
 
     def act(self, img, goal_img, inp, next_image=None):
+        # Cache image for potential reflection later
+        if isinstance(img, np.ndarray):
+            self._last_image = img.copy()
+        else:
+            self._last_image = None
+
         # context embedding: use vision if available, else fallback to state
         if self.use_vision:
             try:
@@ -636,7 +970,7 @@ class RoMemoDiscreteAgent:
 
         # NEW: Extract symbolic state for state-query retrieval
         symbolic_state = None
-        if self.retrieval_mode in ("symbolic", "hybrid"):
+        if self.retrieval_mode in ("symbolic", "hybrid") or self.use_principles:
             symbolic_state = extract_symbolic_state(
                 self.env,
                 base_action,
@@ -644,6 +978,12 @@ class RoMemoDiscreteAgent:
                 last_fail_tag=self._last_fail_tag,
             )
         self._pending_symbolic_state = symbolic_state
+
+        # NEW (Phase 2): Retrieve applicable principles
+        principles: List[Principle] = []
+        if self.use_principles:
+            action_type = self._extract_action_type(base_action)
+            principles = self._get_applicable_principles(action_type, symbolic_state)
 
         # Retrieve based on mode
         if self.retrieval_mode == "symbolic":
@@ -668,7 +1008,21 @@ class RoMemoDiscreteAgent:
             ret = self.store.retriever.retrieve(query=state_vec, k=int(self.cfg.k))
 
         scores, stats = self._mem_action_scores(ret)
-        chosen, ranked, top_mem = self._choose(base_action, scores, stats, ctx_hash)
+
+        # NEW: Pass principles to _choose for constraint checking
+        chosen, ranked, top_mem, principle_suggested = self._choose(
+            base_action,
+            scores,
+            stats,
+            ctx_hash,
+            principles=principles,
+            symbolic_state=symbolic_state,
+        )
+
+        # Track action history for reflection
+        self._action_history.append(str(chosen))
+        if len(self._action_history) > 20:
+            self._action_history = self._action_history[-20:]
 
         # create pending experience (aligned with RoMemo pending/update pattern)
         self._pending = Experience(
@@ -694,6 +1048,9 @@ class RoMemoDiscreteAgent:
                     "n": int(len(ret.experiences)),
                     "mode": self.retrieval_mode,  # NEW: log retrieval mode
                 },
+                # NEW: Track principle usage
+                "principles_used": len(principles) if principles else 0,
+                "principle_suggested": principle_suggested,
             },
         )
 
@@ -712,6 +1069,21 @@ class RoMemoDiscreteAgent:
             "retrieval_mode": self.retrieval_mode,  # NEW
             "memory_size": int(len(self.store.memory)),
             "symbolic_state": symbolic_state,  # NEW: for debugging
+            # NEW (Phase 2): Principle info
+            "principles": {
+                "enabled": self.use_principles,
+                "count": len(principles) if principles else 0,
+                "suggested_action": principle_suggested,
+                "store_size": len(self.principle_store) if self.principle_store else 0,
+                "applied": [
+                    {
+                        "content": p.content[:80] + "..." if len(p.content) > 80 else p.content,
+                        "confidence": p.confidence,
+                        "action_types": p.action_types,
+                    }
+                    for p in (principles or [])[:3]
+                ],
+            },
             "retrieved": [
                 {
                     "dist": float(d),
@@ -835,12 +1207,28 @@ class RoMemoDiscreteAgent:
             else:
                 self.store.writeback.write(self._pending)
 
+        # NEW (Phase 2): Reflect on failure and extract principle
+        learned_principle = None
+        if fail and self.use_principles and inferred_fail_tag:
+            learned_principle = self._reflect_on_failure(
+                failed_action=a,
+                fail_tag=inferred_fail_tag,
+                oracle_action=oracle_action,
+                symbolic_state=self._pending_symbolic_state,
+                image=self._last_image,
+            )
+
         # NEW: Track last action outcome for next symbolic state extraction
         self._last_action_success = not fail
         self._last_fail_tag = inferred_fail_tag if fail else None
 
         # clear pending
-        out = {"fail": bool(fail), "fail_tag": inferred_fail_tag}
+        out = {
+            "fail": bool(fail),
+            "fail_tag": inferred_fail_tag,
+            # NEW: Include learned principle info
+            "learned_principle": learned_principle.content[:80] if learned_principle else None,
+        }
         self._pending = None
         self._pending_pred = None
         self._pending_symbolic_state = None
