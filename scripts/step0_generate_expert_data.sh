@@ -56,7 +56,7 @@ POST_MODEL_PATH="${POST_MODEL_PATH:-/share/project/lhy/thirdparty/reflect-vlm/Re
 
 # Optional overrides used by run_three_pillars_full.sh
 DATA_ROOT="${DATA_ROOT:-}"
-IN_DOMAIN_TRAJS="${IN_DOMAIN_TRAJS:-2500}"
+IN_DOMAIN_TRAJS="${IN_DOMAIN_TRAJS:-5000}"
 OOD_TRAJS="${OOD_TRAJS:-2000}"
 LEVEL="${LEVEL:-all}"
 IN_DOMAIN_SEED="${IN_DOMAIN_SEED:-1000001}"

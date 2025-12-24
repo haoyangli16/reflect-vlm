@@ -11,7 +11,7 @@ export GPUS=${GPUS:-"0,1,2,3,4,5,6,7"}
 export INIT_MEMORY_PATH="data/three_pillars/memory_subsets/mem_100.pt"
 
 # NEW: Retrieval mode for state-query based retrieval
-export RETRIEVAL_MODE="${RETRIEVAL_MODE:-visual}"
+export RETRIEVAL_MODE="${RETRIEVAL_MODE:-symbolic}"
 export SYMBOLIC_WEIGHT="${SYMBOLIC_WEIGHT:-0.5}"
 
 # Include retrieval mode in output dir

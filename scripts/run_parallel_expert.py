@@ -150,6 +150,7 @@ def main():
             f"--start_traj_id={start_traj}",
             f"--start_board_id={start_board}",
             f"--seed={job_seed}",
+            f"--romemo_retrieval_mode=symbolic",
             f"--reset_seed_start={job_seed}",  # Also shift reset seeds
         ]
 

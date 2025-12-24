@@ -71,7 +71,7 @@ FLAGS_DEF = define_flags(
     record_frame_skip=(5, "integer", "Skip between recorded frames."),
     # RoMemo wrapper
     romemo_k=(20, "integer", "RoMemo: top-k retrieved items."),
-    romemo_alpha=(0.2, "float", "RoMemo: alpha weight on base action prior."),
+    romemo_alpha=(0.65, "float", "RoMemo: alpha weight on base action prior."),
     romemo_lambda_fail=(1.5, "float", "RoMemo: penalty weight for failures."),
     romemo_beta_failrate=(0.5, "float", "RoMemo: risk penalty for fail-rate in neighbors."),
     romemo_beta_repeat=(0.2, "float", "RoMemo: penalty per repeat-failure count."),
@@ -93,9 +93,9 @@ FLAGS_DEF = define_flags(
     ),
     # NEW: Retrieval mode for state-query based retrieval
     romemo_retrieval_mode=(
-        "visual",
+        "symbolic",
         "string",
-        "RoMemo: retrieval mode - 'visual' (default), 'symbolic', or 'hybrid'.",
+        "RoMemo: retrieval mode - 'visual', 'symbolic' (default), or 'hybrid'.",
     ),
     romemo_symbolic_weight=(
         0.5,

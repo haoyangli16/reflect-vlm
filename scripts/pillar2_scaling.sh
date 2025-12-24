@@ -48,7 +48,7 @@ AGENT_SEEDS=${AGENT_SEEDS:-"0"}
 SCALING_SIZES=${SCALING_SIZES:-"0,10,50,100,500,1000,2000"}
 
 # NEW: Retrieval mode for state-query based retrieval
-RETRIEVAL_MODE=${RETRIEVAL_MODE:-"visual"}
+RETRIEVAL_MODE=${RETRIEVAL_MODE:-"symbolic"}
 SYMBOLIC_WEIGHT=${SYMBOLIC_WEIGHT:-0.5}
 
 # Include retrieval mode in output dir

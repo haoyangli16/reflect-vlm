@@ -51,7 +51,7 @@ OOD_RATIOS=${OOD_RATIOS:-"100,80,60,40,20"}
 METHOD="bc_romemo"
 
 # NEW: Retrieval mode for state-query based retrieval
-RETRIEVAL_MODE=${RETRIEVAL_MODE:-"visual"}
+RETRIEVAL_MODE=${RETRIEVAL_MODE:-"symbolic"}
 SYMBOLIC_WEIGHT=${SYMBOLIC_WEIGHT:-0.5}
 
 # Include retrieval mode in output dir

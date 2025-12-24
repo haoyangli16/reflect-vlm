@@ -189,6 +189,7 @@ def main():
             f"--start_board_id={start_board}",
             f"--seed={job_seed}",
             f"--reset_seed_start={job_seed}",
+            f"--romemo_retrieval_mode=symbolic",
             f"--stop_on_failure={args.stop_on_failure}",
             f"--write_on_success={args.write_on_success}",
             "--trace_jsonl=True",

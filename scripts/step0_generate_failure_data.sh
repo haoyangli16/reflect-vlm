@@ -72,7 +72,7 @@ GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
 # ==========================================
 # Experiment Configuration (override with env vars)
 # ==========================================
-N_TRAJS="${N_TRAJS:-1000}"  # Number of trajectories (more = more failures)
+N_TRAJS="${N_TRAJS:-6000}"  # Number of trajectories (more = more failures)
 LEVEL="${LEVEL:-all}"       # Task difficulty: medium, hard, all
 SEED="${SEED:-1000001}"           # Random seed
 AGENT_TYPE="${AGENT_TYPE:-bc_romemo_wb}"  # Agent to generate failures

@@ -52,7 +52,7 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 DATA_DIR="${PROJECT_ROOT}/data"
 # Include retrieval mode in output dir so different modes are kept separate
-RETRIEVAL_MODE_FOR_PATH="${RETRIEVAL_MODE:-visual}"
+RETRIEVAL_MODE_FOR_PATH="${RETRIEVAL_MODE:-symbolic}"
 LOGS_DIR="${LOGS_DIR:-${PROJECT_ROOT}/logs/pillar4_constraints_ratio_${RETRIEVAL_MODE_FOR_PATH}}"
 
 # Create directories
@@ -86,7 +86,7 @@ METHODS="${METHODS:-bc_romemo,bc_romemo_wb,reflect_romemo,reflect_romemo_wb}"
 
 # NEW: Retrieval mode for state-query based retrieval
 # Options: "visual" (default, original behavior), "symbolic" (state-query), "hybrid"
-RETRIEVAL_MODE="${RETRIEVAL_MODE:-visual}"
+RETRIEVAL_MODE="${RETRIEVAL_MODE:-symbolic}"
 SYMBOLIC_WEIGHT="${SYMBOLIC_WEIGHT:-0.5}"  # For hybrid mode
 
 IFS=',' read -ra GPU_ARR <<< "$GPUS"
