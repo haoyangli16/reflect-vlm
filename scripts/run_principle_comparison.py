@@ -62,7 +62,6 @@ class ExperimentConfig:
     name: str
     agent_type: str
     model_path: str
-    n_envs: int
     n_trajs: int
     max_steps: int
     memory_path: Optional[str]
@@ -80,7 +79,6 @@ class ExperimentConfig:
             "run-rom.py",
             f"--agent_type={self.agent_type}",
             f"--model_path={self.model_path}",
-            f"--n_envs={self.n_envs}",
             f"--n_trajs={self.n_trajs}",
             f"--max_steps={self.max_steps}",
             f"--romemo_retrieval_mode={self.retrieval_mode}",
@@ -187,8 +185,7 @@ def check_vlm_availability() -> Dict[str, bool]:
 
 def main():
     parser = argparse.ArgumentParser(description="Run Principle Learning Comparison")
-    parser.add_argument("--memory_path", type=str, required=True, help="Path to memory file")
-    parser.add_argument("--n_envs", type=int, default=50, help="Number of environments")
+    parser.add_argument("--memory_path", type=str, required=True, help="Path to memory file (.pt)")
     parser.add_argument("--n_trajs", type=int, default=200, help="Number of trajectories")
     parser.add_argument("--max_steps", type=int, default=30, help="Max steps per episode")
     parser.add_argument("--output_dir", type=str, default=None, help="Output directory")
@@ -198,13 +195,13 @@ def main():
     parser.add_argument(
         "--base_model",
         type=str,
-        default="/share/project/lhy/ReflectVLM-llava-v1.5-13b-base",
+        default="./ReflectVLM-llava-v1.5-13b-base",
         help="Base model path",
     )
     parser.add_argument(
         "--post_model",
         type=str,
-        default="/share/project/lhy/ReflectVLM-llava-v1.5-13b-post-trained",
+        default="./ReflectVLM-llava-v1.5-13b-post-trained",
         help="Post-trained model path",
     )
     parser.add_argument("--parallel", action="store_true", help="Run experiments in parallel")
@@ -231,7 +228,6 @@ def main():
 
     # Common settings
     common = {
-        "n_envs": args.n_envs,
         "n_trajs": args.n_trajs,
         "max_steps": args.max_steps,
         "memory_path": args.memory_path,
@@ -239,6 +235,7 @@ def main():
     }
 
     # BC Policy experiments
+    # Note: bc_romemo is the base agent type, _wb suffix added for writeback
     for policy_name, model_path, agent_suffix in [
         ("bc", args.base_model, "bc_romemo"),
         ("reflect", args.post_model, "bc_romemo"),

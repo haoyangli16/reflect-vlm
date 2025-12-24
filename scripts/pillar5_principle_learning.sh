@@ -26,15 +26,28 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
 
-# Experiment settings
-N_ENVS="${N_ENVS:-50}"
+# Experiment settings (note: run-rom.py doesn't use n_envs)
 N_TRAJS="${N_TRAJS:-200}"
 MAX_STEPS="${MAX_STEPS:-30}"
 RETRIEVAL_MODE="${RETRIEVAL_MODE:-symbolic}"
 SYMBOLIC_WEIGHT="${SYMBOLIC_WEIGHT:-0.5}"
 
-# Memory settings
-MEMORY_PATH="${MEMORY_PATH:-data/memory/mixed_memory.json}"
+# Memory settings - auto-detect if not set
+if [ -z "$MEMORY_PATH" ]; then
+    # Try to find memory file in common locations
+    if [ -f "data/mixed_memories/mixed_1000_good100.pt" ]; then
+        MEMORY_PATH="data/mixed_memories/mixed_1000_good100.pt"
+    elif [ -f "data/raw_expert_indomain.pt" ]; then
+        MEMORY_PATH="data/raw_expert_indomain.pt"
+    elif [ -f "datasets/parallel_indomain/memory_part_0.pt" ]; then
+        MEMORY_PATH="datasets/parallel_indomain/memory_part_0.pt"
+    else
+        echo "ERROR: No memory file found. Please set MEMORY_PATH or generate memory first."
+        echo "Available .pt files:"
+        find data datasets -name "*.pt" 2>/dev/null | head -10
+        exit 1
+    fi
+fi
 PRINCIPLE_SAVE_DIR="${PRINCIPLE_SAVE_DIR:-data/principles}"
 
 # Output settings
@@ -43,9 +56,18 @@ LOGS_DIR="${LOGS_DIR:-logs/pillar5_principles_${TIMESTAMP}}"
 mkdir -p "$LOGS_DIR"
 mkdir -p "$PRINCIPLE_SAVE_DIR"
 
-# Model paths
-BASE_MODEL="${BASE_MODEL:-/share/project/lhy/ReflectVLM-llava-v1.5-13b-base}"
-POST_MODEL="${POST_MODEL:-/share/project/lhy/ReflectVLM-llava-v1.5-13b-post-trained}"
+# Model paths - auto-detect if in project directory
+if [ -d "./ReflectVLM-llava-v1.5-13b-base" ]; then
+    BASE_MODEL="${BASE_MODEL:-./ReflectVLM-llava-v1.5-13b-base}"
+else
+    BASE_MODEL="${BASE_MODEL:-/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-base}"
+fi
+
+if [ -d "./ReflectVLM-llava-v1.5-13b-post-trained" ]; then
+    POST_MODEL="${POST_MODEL:-./ReflectVLM-llava-v1.5-13b-post-trained}"
+else
+    POST_MODEL="${POST_MODEL:-/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-post-trained}"
+fi
 
 # VLM reflector settings (for VLM-based experiments)
 REFLECTOR_PROVIDER="${REFLECTOR_PROVIDER:-}"  # "openai", "gemini", "qwen", or empty for rule-based
@@ -55,10 +77,11 @@ echo "============================================================"
 echo "Pillar 5: Principle-Based Learning Experiments"
 echo "============================================================"
 echo "Timestamp: $TIMESTAMP"
-echo "N_ENVS: $N_ENVS"
 echo "N_TRAJS: $N_TRAJS"
 echo "Memory: $MEMORY_PATH"
 echo "Retrieval Mode: $RETRIEVAL_MODE"
+echo "Base Model: $BASE_MODEL"
+echo "Post Model: $POST_MODEL"
 echo "Logs: $LOGS_DIR"
 echo "Reflector Provider: ${REFLECTOR_PROVIDER:-rule-based}"
 echo "============================================================"
@@ -66,7 +89,21 @@ echo "============================================================"
 # Check if memory exists
 if [ ! -f "$MEMORY_PATH" ]; then
     echo "ERROR: Memory file not found: $MEMORY_PATH"
-    echo "Please generate memory first using step0_generate_expert_data.sh or step0_generate_failure_data.sh"
+    echo "Please generate memory first or set MEMORY_PATH environment variable."
+    echo "Example: MEMORY_PATH=data/mixed_memories/mixed_1000_good100.pt bash scripts/pillar5_principle_learning.sh"
+    exit 1
+fi
+
+# Check if models exist
+if [ ! -d "$BASE_MODEL" ]; then
+    echo "ERROR: Base model not found: $BASE_MODEL"
+    echo "Please set BASE_MODEL environment variable to the correct path."
+    exit 1
+fi
+
+if [ ! -d "$POST_MODEL" ]; then
+    echo "ERROR: Post model not found: $POST_MODEL"
+    echo "Please set POST_MODEL environment variable to the correct path."
     exit 1
 fi
 
@@ -86,15 +123,13 @@ run_baseline() {
     python run-rom.py \
         --agent_type="$agent_type" \
         --model_path="$model_path" \
-        --n_envs="$N_ENVS" \
         --n_trajs="$N_TRAJS" \
-        --max_episode_steps="$MAX_STEPS" \
-        --romemo_memory_path="$MEMORY_PATH" \
+        --max_steps="$MAX_STEPS" \
+        --romemo_init_memory_path="$MEMORY_PATH" \
         --romemo_retrieval_mode="$RETRIEVAL_MODE" \
         --romemo_symbolic_weight="$SYMBOLIC_WEIGHT" \
         --romemo_use_principles=false \
-        --romemo_writeback=false \
-        --output_dir="$LOGS_DIR/${output_name}_baseline" \
+        --save_dir="$LOGS_DIR/${output_name}_baseline" \
         2>&1 | tee "$LOGS_DIR/${output_name}_baseline.log"
 }
 
@@ -113,20 +148,20 @@ run_with_principles_rulebased() {
     
     local principle_path="$PRINCIPLE_SAVE_DIR/${output_name}_rulebased_principles.json"
     
+    # Use _wb suffix for writeback agent
+    local wb_agent="${agent_type}_wb"
+    
     python run-rom.py \
-        --agent_type="$agent_type" \
+        --agent_type="$wb_agent" \
         --model_path="$model_path" \
-        --n_envs="$N_ENVS" \
         --n_trajs="$N_TRAJS" \
-        --max_episode_steps="$MAX_STEPS" \
-        --romemo_memory_path="$MEMORY_PATH" \
+        --max_steps="$MAX_STEPS" \
+        --romemo_init_memory_path="$MEMORY_PATH" \
         --romemo_retrieval_mode="$RETRIEVAL_MODE" \
         --romemo_symbolic_weight="$SYMBOLIC_WEIGHT" \
         --romemo_use_principles=true \
-        --romemo_reflector_provider="" \
         --romemo_principle_store_path="$principle_path" \
-        --romemo_writeback=true \
-        --output_dir="$LOGS_DIR/${output_name}_principles_rulebased" \
+        --save_dir="$LOGS_DIR/${output_name}_principles_rulebased" \
         2>&1 | tee "$LOGS_DIR/${output_name}_principles_rulebased.log"
     
     echo "Principles saved to: $principle_path"
@@ -154,21 +189,22 @@ run_with_principles_vlm() {
     
     local principle_path="$PRINCIPLE_SAVE_DIR/${output_name}_${provider}_principles.json"
     
+    # Use _wb suffix for writeback agent
+    local wb_agent="${agent_type}_wb"
+    
     python run-rom.py \
-        --agent_type="$agent_type" \
+        --agent_type="$wb_agent" \
         --model_path="$model_path" \
-        --n_envs="$N_ENVS" \
         --n_trajs="$N_TRAJS" \
-        --max_episode_steps="$MAX_STEPS" \
-        --romemo_memory_path="$MEMORY_PATH" \
+        --max_steps="$MAX_STEPS" \
+        --romemo_init_memory_path="$MEMORY_PATH" \
         --romemo_retrieval_mode="$RETRIEVAL_MODE" \
         --romemo_symbolic_weight="$SYMBOLIC_WEIGHT" \
         --romemo_use_principles=true \
         --romemo_reflector_provider="$provider" \
         --romemo_reflector_model="$model" \
         --romemo_principle_store_path="$principle_path" \
-        --romemo_writeback=true \
-        --output_dir="$LOGS_DIR/${output_name}_principles_${provider}" \
+        --save_dir="$LOGS_DIR/${output_name}_principles_${provider}" \
         2>&1 | tee "$LOGS_DIR/${output_name}_principles_${provider}.log"
     
     echo "Principles saved to: $principle_path"
@@ -184,9 +220,10 @@ echo "Starting Experiments with BC (Base) Policy"
 echo "============================================================"
 
 # BC Policy experiments
-run_baseline "bc" "$BASE_MODEL" "bc"
-run_with_principles_rulebased "bc" "$BASE_MODEL" "bc"
-run_with_principles_vlm "bc" "$BASE_MODEL" "bc" "$REFLECTOR_PROVIDER" "$REFLECTOR_MODEL"
+# Use bc_romemo for baseline (no writeback)
+run_baseline "bc_romemo" "$BASE_MODEL" "bc"
+run_with_principles_rulebased "bc_romemo" "$BASE_MODEL" "bc"
+run_with_principles_vlm "bc_romemo" "$BASE_MODEL" "bc" "$REFLECTOR_PROVIDER" "$REFLECTOR_MODEL"
 
 echo ""
 echo "============================================================"
@@ -194,9 +231,10 @@ echo "Starting Experiments with Reflect (Post-Trained) Policy"
 echo "============================================================"
 
 # Reflect Policy experiments
-run_baseline "bc" "$POST_MODEL" "reflect"
-run_with_principles_rulebased "bc" "$POST_MODEL" "reflect"
-run_with_principles_vlm "bc" "$POST_MODEL" "reflect" "$REFLECTOR_PROVIDER" "$REFLECTOR_MODEL"
+# Use bc_romemo for baseline (no writeback)
+run_baseline "bc_romemo" "$POST_MODEL" "reflect"
+run_with_principles_rulebased "bc_romemo" "$POST_MODEL" "reflect"
+run_with_principles_vlm "bc_romemo" "$POST_MODEL" "reflect" "$REFLECTOR_PROVIDER" "$REFLECTOR_MODEL"
 
 # ============================================================================
 # Aggregate Results

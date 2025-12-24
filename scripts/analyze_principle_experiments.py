@@ -63,12 +63,22 @@ def load_results(results_dir: Path) -> Optional[Dict[str, Any]]:
 
 
 def load_principles(principle_path: Path) -> Optional[Dict[str, Any]]:
-    """Load principle store from file."""
+    """Load principle store from file (.json or .pt)."""
     if not principle_path.exists():
         return None
 
-    with open(principle_path, "r") as f:
-        return json.load(f)
+    try:
+        if principle_path.suffix == ".pt":
+            import torch
+
+            data = torch.load(principle_path, map_location="cpu")
+            return data
+        else:
+            with open(principle_path, "r") as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"Warning: Failed to load {principle_path}: {e}")
+        return None
 
 
 def load_step_traces(results_dir: Path) -> List[Dict[str, Any]]:
