@@ -44,9 +44,8 @@ sys.path.insert(0, str(PROJECT_ROOT.parent.parent))  # worldmemory root
 # Imports from reflect-vlm
 try:
     from roboworld.envs.generator import generate_xml
-    from roboworld.envs.mujoco.franka.franka_assembly import FrankaAssemblyEnv
+    from roboworld.envs.mujoco.franka.franka_assembly import FrankaAssemblyEnv, AssemblyOracle
     from roboworld.agent.llava import LlavaAgent
-    from roboworld.agent.oracle import AssemblyOracle
     from roboworld.agent.romemo_stack import (
         RoMemoDiscreteAgent,
         RoMemoDiscreteConfig,
@@ -131,11 +130,27 @@ def create_environment(seed: int, render_mode: str = "offscreen") -> Tuple[Frank
     """
     Create a FrankaAssemblyEnv for a given seed.
 
+    This follows the same pattern as run-rom.py to ensure compatibility.
+
     Returns:
-        Tuple of (environment, info_dict)
+        Tuple of (environment, env_info_dict)
     """
+    import tempfile
+    import os as _os
+
     # Generate the board - returns (xml, info) tuple
     xml, info = generate_xml(seed=seed)
+
+    # Write XML to temporary file
+    xml_filename = _os.path.join(tempfile.gettempdir(), f"assembly_{seed}.xml")
+    xml.write_to_file(filename=xml_filename)
+
+    # Construct peg_ids, peg_names, peg_descriptions (matching run-rom.py)
+    board_name = "brick_1"
+    fixture_name = None
+    peg_ids = [j + 1 for j in range(1, info["n_bodies"])]
+    peg_names = [f"brick_{j + 1}" for j in range(1, info["n_bodies"])]
+    peg_descriptions = [info["brick_descriptions"][peg_name] for peg_name in peg_names]
 
     # Extract shape information
     brick_shapes = info.get("brick_shapes", {})
@@ -145,13 +160,14 @@ def create_environment(seed: int, render_mode: str = "offscreen") -> Tuple[Frank
 
     # Create environment
     env = FrankaAssemblyEnv(
-        board_name=info["board_name"],
-        fixture_name=info["fixture_name"],
-        peg_names=info["peg_names"],
-        peg_descriptions=info["brick_descriptions"],
+        board_name=board_name,
+        fixture_name=fixture_name,
+        peg_names=peg_names,
+        peg_descriptions=peg_descriptions,
         render_mode=render_mode,
         frame_skip=20,
-        model_name=info["xml_filename"],
+        model_name=xml_filename,
+        max_episode_length=50000,
         magic_attaching=True,
         # Shape information for symbolic state
         brick_shapes=brick_shapes,
@@ -160,7 +176,20 @@ def create_environment(seed: int, render_mode: str = "offscreen") -> Tuple[Frank
         dependency_signatures=dependency_signatures,
     )
 
-    return env, info
+    # Build env_info dict (matching run-rom.py structure)
+    env_info = {
+        "peg_ids": peg_ids,
+        "peg_names": peg_names,
+        "peg_descriptions": peg_descriptions,
+        "brick_shapes": brick_shapes,
+        "color_to_signature": color_to_signature,
+        "signature_to_color": signature_to_color,
+        "dependency_signatures": dependency_signatures,
+        "dependencies": info["dependencies"],
+        "brick_descriptions": info["brick_descriptions"],
+    }
+
+    return env, env_info
 
 
 # ============================================================================
@@ -267,7 +296,13 @@ class EpisodeRunner:
 
             # Record experience with the learning loop
             if self.learning_loop and self.config.mode == "memory":
-                symbolic_state = extract_symbolic_state(env, action)
+                # extract_symbolic_state requires: env, proposed_action, last_action_success, last_fail_tag
+                symbolic_state = extract_symbolic_state(
+                    env,
+                    action,
+                    last_action_success=action_success,
+                    last_fail_tag=fail_tag,
+                )
 
                 self.learning_loop.record_experience(
                     action=action,
@@ -378,7 +413,6 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
     base_agent = LlavaAgent(
         model_path=model_path,
         load_4bit=True,
-        device_map="auto",
     )
     print(f"  Loaded: {model_path}")
 
@@ -429,7 +463,13 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
             env, info = create_environment(seed)
 
             # Create oracle for this episode
-            oracle = AssemblyOracle(env)
+            # AssemblyOracle needs: brick_ids, brick_descriptions, dependencies, env
+            oracle = AssemblyOracle(
+                brick_ids=info["peg_ids"],
+                brick_descriptions=info["peg_descriptions"],
+                dependencies=info["dependencies"],
+                env=env,
+            )
             runner.oracle = oracle
 
             # Run episode

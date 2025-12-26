@@ -233,19 +233,25 @@ def test_environment_generation():
 
         # generate_xml returns (xml, info) tuple
         xml, info = generate_xml(seed=1000001)
-        print(f"  ✓ Generated board: {info.get('board_name', 'N/A')}")
-        print(f"  ✓ Pieces: {len(info.get('peg_names', []))}")
+        print(f"  ✓ Generated XML object: {type(xml).__name__}")
+        print(f"  ✓ Number of pieces: {info.get('n_bodies', 'N/A')}")
         print(f"  ✓ Shape info available: {'brick_shapes' in info}")
+        print(f"  ✓ Dependencies: {len(info.get('dependencies', []))} relations")
 
         if "brick_shapes" in info:
             shapes = info["brick_shapes"]
             print(f"  ✓ Shape signatures: {len(shapes)} pieces")
             for name, shape in list(shapes.items())[:2]:
-                print(f"    - {name}: {shape.get('signature', 'N/A')[:50]}...")
+                sig = shape.get("signature", "N/A")
+                sig_preview = sig[:50] + "..." if len(sig) > 50 else sig
+                print(f"    - {name}: {sig_preview}")
 
         return True
     except Exception as e:
+        import traceback
+
         print(f"  ✗ Environment generation failed: {e}")
+        traceback.print_exc()
         return False
 
 
