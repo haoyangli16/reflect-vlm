@@ -48,6 +48,7 @@ try:
     from roboworld.envs.generator import generate_xml
     from roboworld.envs.mujoco.franka.franka_assembly import FrankaAssemblyEnv, AssemblyOracle
     from roboworld.agent.llava import LlavaAgent
+    from roboworld.agent.utils import get_prompt  # Original prompt format!
     from roboworld.agent.romemo_stack import (
         RoMemoDiscreteAgent,
         RoMemoDiscreteConfig,
@@ -180,11 +181,15 @@ def create_environment(seed: int, render_mode: str = "offscreen") -> Tuple[Frank
         dependency_signatures=dependency_signatures,
     )
 
+    # Extract color labels (matching run-rom.py)
+    peg_labels = [" ".join(pd.split()[:1]) for pd in peg_descriptions]
+
     # Build env_info dict (matching run-rom.py structure)
     env_info = {
         "peg_ids": peg_ids,
         "peg_names": peg_names,
         "peg_descriptions": peg_descriptions,
+        "peg_labels": peg_labels,  # Color labels for prompts
         "brick_shapes": brick_shapes,
         "color_to_signature": color_to_signature,
         "signature_to_color": signature_to_color,
@@ -347,29 +352,25 @@ class EpisodeRunner:
         info: Dict,
         action_history: List[str],
     ) -> str:
-        """Build the action prompt for the agent."""
-        colors = list(getattr(env, "peg_colors", []))
+        """
+        Build the action prompt for the agent.
 
-        prompt = f"""## Robot Assembly Task
+        CRITICAL: Uses the ORIGINAL get_prompt() format that the LLaVA model
+        was trained on. Using a different format will break model performance!
+        """
+        # Get color labels (same as run-rom.py)
+        peg_labels = info.get("peg_labels", [])
+        if not peg_labels:
+            # Fallback: extract from peg_descriptions
+            peg_descriptions = info.get("peg_descriptions", [])
+            peg_labels = [" ".join(pd.split()[:1]) for pd in peg_descriptions]
 
-You are controlling a robot arm to assemble interlocking puzzle pieces.
-
-### Available Actions
-- pick up <color>: Pick up a piece of the specified color
-- insert <color>: Insert the piece you're holding
-- reorient <color>: Stand up a piece that's lying flat
-- put down <color>: Put down the piece you're holding
-- done: Declare the task complete
-
-### Available Pieces
-{", ".join(colors)}
-
-### Action History
-{", ".join(action_history[-5:]) if action_history else "None"}
-
-### Instructions
-Select the best next action. Output ONLY the action, nothing else.
-"""
+        # Use the ORIGINAL prompt format from roboworld.agent.utils
+        prompt = get_prompt(
+            version="propose",
+            history=action_history,
+            obj_labels=peg_labels,
+        )
         return prompt
 
     def _get_expected_action_type(self, env: FrankaAssemblyEnv) -> Optional[str]:
