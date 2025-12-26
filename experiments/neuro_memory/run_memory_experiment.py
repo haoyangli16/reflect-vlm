@@ -146,15 +146,15 @@ class DebugLogger:
                 "symbolic_state": symbolic_state,
             },
         )
-        # Also print key info if verbose
-        if self.enabled and symbolic_state:
+        # Only print on failures or first step
+        if self.enabled and symbolic_state and not action_success:
             target = symbolic_state.get("target_signature") or "N/A"
             holding = symbolic_state.get("holding_signature") or "N/A"
             deps = symbolic_state.get("dependencies_satisfied", True)
-            print(
-                f"    [DEBUG] State: target={target}, holding={holding}, "
-                f"deps_ok={deps}, success={action_success}"
-            )
+            # Truncate long signatures
+            target = target[:30] + "..." if len(target) > 30 else target
+            holding = holding[:30] + "..." if len(holding) > 30 else holding
+            print(f"    [STATE] target={target}, holding={holding}, deps={deps}")
 
     def log_action(
         self,
@@ -179,6 +179,19 @@ class DebugLogger:
                 "principles": (
                     [p.content[:50] + "..." for p in principles_used] if principles_used else []
                 ),
+            },
+        )
+
+        # Also save the full prompt for debugging
+        prompt_log = self.save_dir / "prompts.jsonl"
+        self._write(
+            prompt_log,
+            {
+                "timestamp": datetime.now().isoformat(),
+                "episode_id": episode_id,
+                "step": step,
+                "action": action,
+                "enhanced_prompt": enhanced_prompt or prompt,
             },
         )
 
@@ -582,6 +595,7 @@ class ExperimentConfig:
     save_memory: bool = True
     verbose: bool = True
     debug: bool = True  # Enable detailed debug logging
+    show_prompts: bool = False  # Print prompts to terminal (very verbose)
 
     def get_model_path(self) -> str:
         """Get the appropriate model path."""
@@ -799,6 +813,12 @@ class EpisodeRunner:
             else:
                 enhanced_prompt = prompt
 
+            # Optionally show prompt
+            if self.config.show_prompts and step == 0:
+                print("\n" + "=" * 40 + " PROMPT " + "=" * 40)
+                print(enhanced_prompt[:1000] + ("..." if len(enhanced_prompt) > 1000 else ""))
+                print("=" * 88 + "\n")
+
             # Get action from agent
             action = self.base_agent.act(img, goal_img, enhanced_prompt)
             action = str(action).strip()
@@ -846,7 +866,9 @@ class EpisodeRunner:
                 # Stuck detection: if same action failed 3+ times, try to break loop
                 recent_failed = [e["action"] for e in self._error_buffer[-3:]]
                 if len(recent_failed) >= 3 and len(set(recent_failed)) == 1:
-                    print(f"    [STUCK] Detected repeated failure: {action}")
+                    # Only print first stuck detection
+                    if stuck_counter == 0:
+                        print(f"    [STUCK] Repeated: {action}")
                     # Add stronger hint to action history
                     action_history[-1] = f"{action} [FAILED - DO NOT REPEAT THIS ACTION]"
 
@@ -1461,6 +1483,11 @@ Examples:
         default=5,
         help="Show working memory every N episodes",
     )
+    parser.add_argument(
+        "--show_prompts",
+        action="store_true",
+        help="Print prompts to terminal (first step of each episode)",
+    )
 
     args = parser.parse_args()
 
@@ -1485,6 +1512,7 @@ Examples:
         verbose=args.verbose,
         show_working_memory=args.show_memory,
         working_memory_interval=args.memory_interval,
+        show_prompts=args.show_prompts,
     )
 
     # Run experiment
