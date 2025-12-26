@@ -24,7 +24,7 @@ Usage:
 
 from __future__ import annotations
 
-import fix_triton_import 
+import fix_triton_import
 
 import argparse
 import json
@@ -92,6 +92,7 @@ class ExperimentConfig:
     seed_start: int = 1000001
     n_episodes: int = 100
     max_steps_per_episode: int = 50
+    camera_name: str = "table_back"  # Camera for rendering (matches run-rom.py default)
 
     # Model paths (relative to project root, or absolute)
     base_model_path: str = "./ReflectVLM-llava-v1.5-13b-base"
@@ -246,14 +247,18 @@ class EpisodeRunner:
         action_history = []
         success = False
 
-        # Get goal image (may be stored in env after reset)
-        goal_img = getattr(env, "goal_images", {}).get("front", None)
+        # Camera name for rendering (matching run-rom.py default)
+        camera_name = self.config.camera_name
+
+        # Get goal image (stored in env after reset)
+        # This is the target assembly state that the agent should achieve
+        goal_img = env.goal_images.get(camera_name, None)
         if goal_img is None:
-            goal_img = env.render()
+            raise RuntimeError(f"Goal image not found for camera '{camera_name}'")
 
         while not done and step < self.config.max_steps_per_episode:
-            # Get current observation
-            img = env.render()
+            # Get current observation using read_pixels (matching run-rom.py)
+            img = env.read_pixels(camera_name=camera_name)
 
             # Generate action prompt
             prompt = self._build_action_prompt(env, info, action_history)
