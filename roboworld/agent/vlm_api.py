@@ -820,13 +820,13 @@ class UnifiedVLM:
     DEFAULT_MODELS = {
         "openai": "gpt-5.1",
         "gpt": "gpt-5.1",
-        "gemini": "gemini-3-pro-preview",
-        "google": "gemini-3-pro-preview",
-        "qwen": "qwen3-vl-235b-a22b-instruct",
-        "alibaba": "qwen3-vl-235b-a22b-instruct",
-        "dashscope": "qwen3-vl-235b-a22b-instruct",
-        "kimi": "moonshot-v1-8k-vision-preview",
-        "moonshot": "moonshot-v1-8k-vision-preview",
+        "gemini": "gemini-3-flash-preview",
+        "google": "gemini-3-flash-preview",
+        "qwen": "qwen3-vl-72b-instruct",
+        "alibaba": "qwen3-vl-72b-instruct",
+        "dashscope": "qwen3-vl-72b-instruct",
+        "kimi": "kimi-k2-0905-preview",
+        "moonshot": "kimi-k2-0905-preview",
     }
 
     def __init__(
