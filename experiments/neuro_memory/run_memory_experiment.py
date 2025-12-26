@@ -1521,6 +1521,12 @@ Examples:
         help="Path to base LLaVA model (for BC policy)",
     )
     parser.add_argument(
+        "--post_model",
+        type=str,
+        default="./ReflectVLM-llava-v1.5-13b-post-trained",
+        help="Path to post-trained LLaVA model (for BC policy)",
+    )
+    parser.add_argument(
         "--use_post_trained",
         action="store_true",
         help="Use post-trained model instead of base (for BC policy)",
@@ -1578,6 +1584,7 @@ Examples:
         policy_model=args.policy_model,
         # BC policy options
         base_model_path=args.base_model,
+        post_model_path=args.post_model,
         use_post_trained=args.use_post_trained,
         # Reflection options
         vlm_provider=args.provider if args.provider != "rule" else None,

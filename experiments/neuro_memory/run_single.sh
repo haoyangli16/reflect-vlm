@@ -2,23 +2,101 @@
 # =============================================================================
 # Single Run Script for Neuro-Symbolic Memory Experiment
 # =============================================================================
-# This script runs a single experiment with all required environment setup.
+# This script runs a single experiment with flexible configuration.
+# It wraps run_memory_experiment.py and handles environment setup.
 #
-# Usage (BC policy - LLaVA):
-#   ./run_single.sh baseline 50           # Baseline mode, 50 episodes
-#   ./run_single.sh memory 100 kimi       # Memory mode, 100 episodes, Kimi VLM
-#   ./run_single.sh memory 100 rule       # Memory mode, rule-based reflection
+# Usage:
+#   ./run_single.sh [flags]
 #
-# Usage (VLM policy - external VLMs):
-#   ./run_single.sh memory 50 kimi vlm openai    # VLM policy (GPT-4V) + Kimi reflection
-#   ./run_single.sh memory 50 kimi vlm gemini    # VLM policy (Gemini) + Kimi reflection
-#   ./run_single.sh memory 50 rule vlm qwen     # VLM policy (Qwen) + rule reflection
+# Flags:
+#   --mode <mode>               Experiment mode: 'baseline' or 'memory' (default: memory)
+#   --episodes <n>              Number of episodes (default: 50)
+#   --seed <n>                  Starting seed (default: 1000001)
+#   --name <name>               Experiment name (default: exp)
+#   --output <dir>              Output directory (default: logs/neuro_memory_exp)
+#
+# Policy (Action Agent):
+#   --policy-type <type>        'bc' (LLaVA) or 'vlm' (External) (default: bc)
+#   --policy-provider <name>    Provider for VLM policy (openai, gemini, qwen, kimi)
+#   --policy-model <name>       Specific model name for VLM policy
+#
+# BC Policy Options (LLaVA):
+#   --base-model <path>         Path to base LLaVA model
+#   --post-model <path>         Path to post-trained LLaVA model
+#   --use-post-train            Flag to use post-trained model instead of base
+#
+# Reflection (Memory System):
+#   --reflection-provider <name> Provider for reflection (rule, kimi, openai, gemini, qwen) (default: rule)
+#   --reflection-model <name>    Specific model name for reflection
+#
+# Examples:
+#   ./run_single.sh --mode baseline --episodes 20
+#   ./run_single.sh --mode memory --use-post-train --reflection-provider kimi
+#   ./run_single.sh --policy-type vlm --policy-provider openai --reflection-provider kimi
 # =============================================================================
 
 set -e
 
 # =============================================================================
-# Environment Setup (CRITICAL for headless rendering)
+# Default Configuration
+# =============================================================================
+MODE="memory"
+N_EPISODES=50
+SEED=1000001
+EXP_NAME="exp"
+SAVE_DIR="logs/neuro_memory_exp"
+
+# Policy Defaults
+POLICY_TYPE="bc"
+POLICY_PROVIDER=""
+POLICY_MODEL=""
+
+# BC Model Defaults
+BASE_MODEL_PATH="./ReflectVLM-llava-v1.5-13b-base"
+POST_MODEL_PATH="./ReflectVLM-llava-v1.5-13b-post-trained"
+USE_POST_TRAINED=false
+
+# Reflection Defaults
+REFLECTION_PROVIDER="rule"
+REFLECTION_MODEL=""
+
+# =============================================================================
+# Parse Arguments
+# =============================================================================
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+        --mode) MODE="$2"; shift ;;
+        --episodes) N_EPISODES="$2"; shift ;;
+        --seed) SEED="$2"; shift ;;
+        --name) EXP_NAME="$2"; shift ;;
+        --output) SAVE_DIR="$2"; shift ;;
+        
+        --policy-type) POLICY_TYPE="$2"; shift ;;
+        --policy-provider) POLICY_PROVIDER="$2"; shift ;;
+        --policy-model) POLICY_MODEL="$2"; shift ;;
+        
+        --base-model) BASE_MODEL_PATH="$2"; shift ;;
+        --post-model) POST_MODEL_PATH="$2"; shift ;;
+        --use-post-train) USE_POST_TRAINED=true ;;
+        
+        --reflection-provider) REFLECTION_PROVIDER="$2"; shift ;;
+        --reflection-model) REFLECTION_MODEL="$2"; shift ;;
+        
+        -h|--help)
+            # Print usage from the header comments
+            sed -n '2,27p' "$0"
+            exit 0
+            ;; 
+        *) 
+            echo "Unknown parameter: $1"
+            exit 1 
+            ;; 
+    esac
+    shift
+done
+
+# =============================================================================
+# Environment Setup
 # =============================================================================
 
 # MuJoCo EGL rendering (for headless servers without display)
@@ -38,157 +116,131 @@ export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
 export TRANSFORMERS_VERBOSITY=error
 export TOKENIZERS_PARALLELISM=false
 
-# HuggingFace settings
-# export HF_ENDPOINT=${HF_ENDPOINT:-https://hf-mirror.com}
-# export HF_HOME="${HF_HOME:-/share/project/hf_cache}"
-# export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME/transformers}"
-# mkdir -p "$HF_HOME" "$TRANSFORMERS_CACHE" 2>/dev/null || true
-# export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
-# export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
-
 # Python settings
 export PYTHONUNBUFFERED=1
 export WANDB_SILENT=true
 
 # =============================================================================
-# Parse Arguments
+# API Key Checks
 # =============================================================================
-MODE=${1:-memory}
-N_EPISODES=${2:-50}
-VLM_PROVIDER=${3:-rule}
-POLICY_TYPE=${4:-bc}          # "bc" (LLaVA) or "vlm" (external VLM)
-POLICY_PROVIDER=${5:-}        # For VLM policy: openai, gemini, qwen, kimi
-
-if [[ "$MODE" != "baseline" && "$MODE" != "memory" ]]; then
-    echo "Usage: $0 <baseline|memory> [n_episodes] [reflection_provider] [policy_type] [policy_provider]"
-    echo ""
-    echo "Examples (BC policy - uses LLaVA for actions):"
-    echo "  $0 baseline 50             # Baseline for 50 episodes"
-    echo "  $0 memory 100 kimi         # Memory with Kimi reflection"
-    echo "  $0 memory 100 rule         # Memory with rule-based reflection"
-    echo ""
-    echo "Examples (VLM policy - uses external VLM for actions):"
-    echo "  $0 memory 50 kimi vlm openai   # GPT-4V policy + Kimi reflection"
-    echo "  $0 memory 50 kimi vlm gemini   # Gemini policy + Kimi reflection"
-    echo "  $0 memory 50 rule vlm qwen     # Qwen policy + rule reflection"
-    exit 1
-fi
-
-# =============================================================================
-# Setup
-# =============================================================================
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-cd "$PROJECT_ROOT"
-
-# Model paths
-export BASE_MODEL_PATH="${BASE_MODEL_PATH:-./ReflectVLM-llava-v1.5-13b-base}"
-
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-SAVE_DIR="logs/neuro_memory_${MODE}_${TIMESTAMP}"
-
-echo "============================================================"
-echo "NEURO-SYMBOLIC MEMORY EXPERIMENT"
-echo "============================================================"
-echo "Mode:           $MODE"
-echo "Episodes:       $N_EPISODES"
-echo "Policy:         $POLICY_TYPE $(if [[ -n "$POLICY_PROVIDER" ]]; then echo "($POLICY_PROVIDER)"; else echo "(LLaVA)"; fi)"
-echo "Reflection:     $VLM_PROVIDER"
-echo "MUJOCO_GL:      $MUJOCO_GL"
-echo "GPU:            $CUDA_VISIBLE_DEVICES"
-echo "Save Dir:       $SAVE_DIR"
-echo "============================================================"
-
-# Function to check API key
 check_api_key() {
     local provider=$1
     case "$provider" in
         kimi)
             if [[ -z "$MOONSHOT_API_KEY" ]]; then
                 echo "ERROR: MOONSHOT_API_KEY not set for $provider"
-                echo "Run: export MOONSHOT_API_KEY='your_key'"
                 return 1
             fi
-            ;;
+            ;; 
         openai)
             if [[ -z "$OPENAI_API_KEY" ]]; then
                 echo "ERROR: OPENAI_API_KEY not set for $provider"
                 return 1
             fi
-            ;;
+            ;; 
         gemini)
             if [[ -z "$GOOGLE_API_KEY" ]]; then
                 echo "ERROR: GOOGLE_API_KEY not set for $provider"
                 return 1
             fi
-            ;;
+            ;; 
         qwen)
             if [[ -z "$DASHSCOPE_API_KEY" ]]; then
                 echo "ERROR: DASHSCOPE_API_KEY not set for $provider"
                 return 1
             fi
-            ;;
+            ;; 
     esac
     return 0
 }
 
-# Check API key for reflection VLM
-if [[ "$MODE" == "memory" && "$VLM_PROVIDER" != "rule" ]]; then
-    if ! check_api_key "$VLM_PROVIDER"; then
+# Check Reflection API Key
+if [[ "$MODE" == "memory" && "$REFLECTION_PROVIDER" != "rule" ]]; then
+    if ! check_api_key "$REFLECTION_PROVIDER"; then
+        echo "Please export the required API key."
         exit 1
     fi
-    echo "Reflection API Key ($VLM_PROVIDER): Set ✓"
 fi
 
-# Check API key for policy VLM
+# Check Policy API Key
 if [[ "$POLICY_TYPE" == "vlm" ]]; then
     if [[ -z "$POLICY_PROVIDER" ]]; then
-        echo "ERROR: --policy_provider required when policy_type=vlm"
+        echo "ERROR: --policy-provider required when --policy-type is 'vlm'"
         exit 1
     fi
     if ! check_api_key "$POLICY_PROVIDER"; then
+        echo "Please export the required API key."
         exit 1
     fi
-    echo "Policy API Key ($POLICY_PROVIDER): Set ✓"
 fi
 
 # =============================================================================
-# Run Experiment
+# Construct Command
 # =============================================================================
-mkdir -p "$SAVE_DIR"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$PROJECT_ROOT"
+
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+FULL_SAVE_DIR="${SAVE_DIR}_${MODE}_${TIMESTAMP}"
+mkdir -p "$FULL_SAVE_DIR"
 
 CMD="python experiments/neuro_memory/run_memory_experiment.py \
     --mode $MODE \
     --n_episodes $N_EPISODES \
+    --seed_start $SEED \
+    --name $EXP_NAME \
     --save_dir $SAVE_DIR \
-    --name exp \
+    --policy_type $POLICY_TYPE \
     --base_model $BASE_MODEL_PATH \
+    --post_model $POST_MODEL_PATH \
+    --provider $REFLECTION_PROVIDER \
     --verbose \
     --show_memory \
     --memory_interval 5"
 
-# Add reflection provider for memory mode
-if [[ "$MODE" == "memory" ]]; then
-    CMD="$CMD --provider $VLM_PROVIDER"
+if [ "$USE_POST_TRAINED" = true ]; then
+    CMD="$CMD --use_post_trained"
 fi
 
-# Add policy type
-CMD="$CMD --policy_type $POLICY_TYPE"
-
-# Add policy provider for VLM policy
-if [[ "$POLICY_TYPE" == "vlm" && -n "$POLICY_PROVIDER" ]]; then
+if [ -n "$POLICY_PROVIDER" ]; then
     CMD="$CMD --policy_provider $POLICY_PROVIDER"
 fi
 
-echo ""
-echo "Running: $CMD"
-echo ""
+if [ -n "$POLICY_MODEL" ]; then
+    CMD="$CMD --policy_model $POLICY_MODEL"
+fi
 
-$CMD 2>&1 | tee "$SAVE_DIR/run.log"
+if [ -n "$REFLECTION_MODEL" ]; then
+    CMD="$CMD --model $REFLECTION_MODEL"
+fi
 
-echo ""
+# =============================================================================
+# Run
+# =============================================================================
 echo "============================================================"
-echo "COMPLETE"
+echo "Starting Experiment: $EXP_NAME"
 echo "============================================================"
-echo "Results saved to: $SAVE_DIR"
+echo "Mode:           $MODE"
+echo "Episodes:       $N_EPISODES"
+echo "Policy:         $POLICY_TYPE"
+if [ "$POLICY_TYPE" == "bc" ]; then
+    echo "  Base Model:   $BASE_MODEL_PATH"
+    echo "  Post Model:   $POST_MODEL_PATH"
+    echo "  Using Post:   $USE_POST_TRAINED"
+else
+    echo "  Provider:     $POLICY_PROVIDER"
+    echo "  Model:        $POLICY_MODEL"
+fi
+echo "Reflection:     $REFLECTION_PROVIDER"
+if [ -n "$REFLECTION_MODEL" ]; then
+    echo "  Model:        $REFLECTION_MODEL"
+fi
+echo "Log Dir:        $FULL_SAVE_DIR"
 echo "============================================================"
+echo "Command:"
+echo "$CMD"
+echo "============================================================"
+
+# Execute
+$CMD 2>&1 | tee "$FULL_SAVE_DIR/run.log"
