@@ -12,7 +12,46 @@
 
 set -e
 
+# =============================================================================
+# Environment Setup (CRITICAL for headless rendering)
+# =============================================================================
+
+# MuJoCo EGL rendering (for headless servers without display)
+export MUJOCO_GL=egl
+export PYOPENGL_PLATFORM=egl
+
+# Fix for LLVM command-line option conflict between triton and bitsandbytes
+export TRITON_PTXAS_PATH=""
+
+# CUDA setup
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+export LD_LIBRARY_PATH=/usr/local/nvidia/lib64:/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}
+
+# Force bitsandbytes to use CUDA 11.7 libraries (matching PyTorch cu117)
+export BNB_CUDA_VERSION=117
+
+# Performance optimizations
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+export TRANSFORMERS_VERBOSITY=error
+export TOKENIZERS_PARALLELISM=false
+
+# HuggingFace cache settings
+export HF_ENDPOINT=${HF_ENDPOINT:-https://hf-mirror.com}
+export HF_HOME="${HF_HOME:-/share/project/hf_cache}"
+export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME/transformers}"
+mkdir -p "$HF_HOME" "$TRANSFORMERS_CACHE" 2>/dev/null || true
+
+# Offline mode to prevent download issues
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
+
+# Python settings
+export PYTHONUNBUFFERED=1
+export WANDB_SILENT=true
+
+# =============================================================================
 # Configuration
+# =============================================================================
 N_EPISODES=${1:-100}
 VLM_PROVIDER=${2:-rule}  # "rule", "kimi", "openai", "gemini", "qwen"
 
@@ -20,6 +59,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 cd "$PROJECT_ROOT"
+
+# Model paths
+export BASE_MODEL_PATH="${BASE_MODEL_PATH:-./ReflectVLM-llava-v1.5-13b-base}"
+export POST_MODEL_PATH="${POST_MODEL_PATH:-./ReflectVLM-llava-v1.5-13b-post-trained}"
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 SAVE_DIR="logs/neuro_memory_comparison_${TIMESTAMP}"
@@ -30,6 +73,8 @@ echo "============================================================"
 echo "Episodes: $N_EPISODES"
 echo "VLM Provider: $VLM_PROVIDER"
 echo "Save Dir: $SAVE_DIR"
+echo "MUJOCO_GL: $MUJOCO_GL"
+echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
 echo "============================================================"
 
 # Check for API keys if using VLM
@@ -39,6 +84,7 @@ if [[ "$VLM_PROVIDER" == "kimi" ]]; then
         echo "Run: export MOONSHOT_API_KEY='your_key'"
         exit 1
     fi
+    echo "Kimi API Key: Set ✓"
 elif [[ "$VLM_PROVIDER" == "openai" ]]; then
     if [[ -z "$OPENAI_API_KEY" ]]; then
         echo "ERROR: OPENAI_API_KEY not set"
@@ -71,6 +117,7 @@ python experiments/neuro_memory/run_memory_experiment.py \
     --n_episodes $N_EPISODES \
     --save_dir "$SAVE_DIR" \
     --name baseline \
+    --base_model "$BASE_MODEL_PATH" \
     --verbose 2>&1 | tee "$SAVE_DIR/baseline.log"
 
 echo ""
@@ -89,6 +136,7 @@ python experiments/neuro_memory/run_memory_experiment.py \
     --n_episodes $N_EPISODES \
     --save_dir "$SAVE_DIR" \
     --name memory_$VLM_PROVIDER \
+    --base_model "$BASE_MODEL_PATH" \
     --verbose 2>&1 | tee "$SAVE_DIR/memory.log"
 
 echo ""
