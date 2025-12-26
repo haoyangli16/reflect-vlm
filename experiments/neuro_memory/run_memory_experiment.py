@@ -437,6 +437,19 @@ class EpisodeRunner:
         # Track active principles for resonance checking
         self._active_principles: List[Principle] = []
 
+        # =====================================================================
+        # PHASE 1: Tier 1 Reflex - Step Error Buffer
+        # =====================================================================
+        # Track recent errors for immediate feedback in prompts
+        self._error_buffer: List[Dict[str, Any]] = []  # Last N failed steps
+        self._error_buffer_size = 5  # Keep last 5 errors for Tier 1 reflex
+
+        # Track active hypotheses for attribution
+        self._active_hypotheses: List[Any] = []
+
+        # Track episode action summary for attribution
+        self._episode_action_summary: List[Dict[str, Any]] = []
+
     def run_episode(
         self,
         env: FrankaAssemblyEnv,
@@ -458,6 +471,18 @@ class EpisodeRunner:
         action_history = []
         success = False
 
+        # =====================================================================
+        # PHASE 1 & 2: Reset per-episode tracking buffers
+        # =====================================================================
+        self._error_buffer = []  # Clear Tier 1 reflex buffer
+        self._episode_action_summary = []  # Clear for attribution
+
+        # PHASE 2: Get active hypotheses at episode start
+        if self.learning_loop and self.config.mode == "memory":
+            self._active_hypotheses = self.learning_loop.get_hypotheses_for_prompt()
+        else:
+            self._active_hypotheses = []
+
         # Camera name for rendering (matching run-rom.py default)
         camera_name = self.config.camera_name
 
@@ -476,14 +501,28 @@ class EpisodeRunner:
 
             # Get action from base agent
             if self.learning_loop and self.config.mode == "memory":
-                # Enhance prompt with learned principles
-                enhanced_prompt = self.learning_loop.enhance_prompt_with_principles(
-                    original_prompt=prompt,
-                    action_type=self._get_expected_action_type(env),
-                )
-                # Get active principles for resonance tracking
+                # =====================================================================
+                # THREE-TIER PROMPT ENHANCEMENT
+                # =====================================================================
+                action_type = self._get_expected_action_type(env)
+
+                # Tier 3: Get principles (most reliable, highest priority)
                 self._active_principles, _ = self.learning_loop.get_principles_for_context(
-                    action_type=self._get_expected_action_type(env),
+                    action_type=action_type,
+                )
+
+                # Tier 2: Get active hypotheses (under testing)
+                active_hypotheses = self._active_hypotheses
+
+                # Tier 1: Get recent errors (reflex feedback)
+                recent_errors = self._error_buffer
+
+                # Build enhanced prompt with all tiers
+                enhanced_prompt = self._build_tiered_prompt(
+                    base_prompt=prompt,
+                    principles=self._active_principles,
+                    hypotheses=active_hypotheses,
+                    recent_errors=recent_errors,
                 )
             else:
                 enhanced_prompt = prompt
@@ -506,6 +545,33 @@ class EpisodeRunner:
                 action_fail = err != 0
                 action_success = err == 0
                 fail_tag = f"err_{err}" if err != 0 else None
+
+            # =====================================================================
+            # PHASE 1: Add errors to Tier 1 reflex buffer
+            # =====================================================================
+            if action_fail and fail_tag:
+                error_entry = {
+                    "step": step,
+                    "action": action,
+                    "error": fail_tag,
+                    "target_signature": None,  # Will be filled from symbolic_state
+                }
+                self._error_buffer.append(error_entry)
+                # Keep only last N errors
+                if len(self._error_buffer) > self._error_buffer_size:
+                    self._error_buffer.pop(0)
+
+            # =====================================================================
+            # PHASE 3: Track action for attribution
+            # =====================================================================
+            self._episode_action_summary.append(
+                {
+                    "step": step,
+                    "action": action,
+                    "success": action_success,
+                    "fail_tag": fail_tag,
+                }
+            )
 
             # Get oracle action (for learning from mistakes)
             oracle_action = None
@@ -560,9 +626,14 @@ class EpisodeRunner:
 
             step += 1
 
-        # End episode in learning loop
+        # End episode in learning loop with attribution (PHASE 3)
         if self.learning_loop and self.config.mode == "memory":
-            self.learning_loop.end_episode(success=success, episode_id=episode_id)
+            self.learning_loop.end_episode(
+                success=success,
+                episode_id=episode_id,
+                action_summary=self._episode_action_summary,  # For attribution
+                active_hypotheses=self._active_hypotheses,  # For attribution
+            )
 
             # Log episode summary
             if self.debug_logger:
@@ -609,6 +680,77 @@ class EpisodeRunner:
             obj_labels=peg_labels,
         )
         return prompt
+
+    def _build_tiered_prompt(
+        self,
+        base_prompt: str,
+        principles: List[Principle],
+        hypotheses: List[Any],
+        recent_errors: List[Dict[str, Any]],
+    ) -> str:
+        """
+        Build prompt with three-tier memory injection.
+
+        Tier Structure (in prompt order):
+        1. Tier 3: VERIFIED PRINCIPLES (highest confidence, prominent display)
+        2. Tier 2: ACTIVE HYPOTHESES (under testing, advisory)
+        3. Tier 1: RECENT ERRORS (immediate reflex feedback)
+        4. Base prompt (original action request)
+
+        This ordering ensures the agent sees the most reliable guidance first.
+        """
+        sections = []
+
+        # =====================================================================
+        # TIER 3: Verified Principles (PHASE 5 - Prominent Display)
+        # =====================================================================
+        if principles:
+            principle_lines = ["## 🏆 LEARNED PRINCIPLES (Apply these first!)"]
+            principle_lines.append("")
+            for i, p in enumerate(principles[:5], 1):  # Max 5 principles
+                conf_pct = int(p.confidence * 100)
+                type_label = getattr(p, "principle_type", "GENERAL")
+                if hasattr(type_label, "name"):
+                    type_label = type_label.name
+                principle_lines.append(f"{i}. [{conf_pct}%] [{type_label}] {p.content}")
+            principle_lines.append("")
+            sections.append("\n".join(principle_lines))
+
+        # =====================================================================
+        # TIER 2: Active Hypotheses (PHASE 2 - Injection)
+        # =====================================================================
+        if hypotheses:
+            hypo_lines = ["## 💡 HYPOTHESES (Under Testing - Consider but verify)"]
+            hypo_lines.append("")
+            for i, h in enumerate(hypotheses[:3], 1):  # Max 3 hypotheses
+                h_type = getattr(h, "hypothesis_type", "GENERAL")
+                if hasattr(h_type, "name"):
+                    h_type = h_type.name
+                statement = getattr(h, "statement", str(h))
+                hypo_lines.append(f"{i}. [TESTING] [{h_type}] {statement}")
+            hypo_lines.append("")
+            sections.append("\n".join(hypo_lines))
+
+        # =====================================================================
+        # TIER 1: Recent Errors (PHASE 1 - Reflex)
+        # =====================================================================
+        if recent_errors:
+            error_lines = ["## ⚠️ RECENT ERRORS (Avoid repeating!)"]
+            error_lines.append("")
+            for err in recent_errors[-3:]:  # Show last 3 errors
+                error_lines.append(
+                    f"- Step {err['step']}: '{err['action']}' failed ({err['error']})"
+                )
+            error_lines.append("")
+            sections.append("\n".join(error_lines))
+
+        # Combine all sections with base prompt
+        if sections:
+            memory_context = "\n".join(sections)
+            # Inject memory context before the base prompt
+            return f"{memory_context}\n---\n\n{base_prompt}"
+        else:
+            return base_prompt
 
     def _get_expected_action_type(self, env: FrankaAssemblyEnv) -> Optional[str]:
         """Get the expected action type based on current state."""
