@@ -7,6 +7,7 @@ import numpy as np
 import transformers
 import tokenizers
 
+
 # Add the reflect-vlm directory to path so we can import roboworld and llava
 # Adjusted to be relative to this script's location
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -65,7 +66,7 @@ def test_compatibility(model_path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_path", type=str, default="./ReflectVLM-llava-v1.5-13b-base")
+    parser.add_argument("--model_path", type=str, default="/share/project/lhy/thirdparty/reflect-vlm/ReflectVLM-llava-v1.5-13b-base")
     args = parser.parse_args()
     
     test_compatibility(args.model_path)

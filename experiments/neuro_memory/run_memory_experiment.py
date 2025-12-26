@@ -24,6 +24,8 @@ Usage:
 
 from __future__ import annotations
 
+import fix_triton_import 
+
 import argparse
 import json
 import os
