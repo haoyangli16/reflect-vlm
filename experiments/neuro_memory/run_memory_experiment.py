@@ -135,14 +135,15 @@ def create_environment(seed: int, render_mode: str = "offscreen") -> Tuple[Frank
     Returns:
         Tuple of (environment, env_info_dict)
     """
-    import tempfile
-    import os as _os
+    import uuid
+    from roboworld.envs.asset_path_utils import full_path_for
 
     # Generate the board - returns (xml, info) tuple
     xml, info = generate_xml(seed=seed)
 
-    # Write XML to temporary file
-    xml_filename = _os.path.join(tempfile.gettempdir(), f"assembly_{seed}.xml")
+    # Write XML to assets directory (where panda.xml and other includes are located)
+    # This is critical - MuJoCo XML files use relative includes
+    xml_filename = full_path_for(f"tmp_neuro_{uuid.uuid4()}.xml")
     xml.write_to_file(filename=xml_filename)
 
     # Construct peg_ids, peg_names, peg_descriptions (matching run-rom.py)
@@ -187,6 +188,8 @@ def create_environment(seed: int, render_mode: str = "offscreen") -> Tuple[Frank
         "dependency_signatures": dependency_signatures,
         "dependencies": info["dependencies"],
         "brick_descriptions": info["brick_descriptions"],
+        # Store xml_filename for cleanup
+        "_xml_filename": xml_filename,
     }
 
     return env, env_info
@@ -483,8 +486,14 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
                 status = "✓" if result["success"] else "✗"
                 print(f"    {status} {episode_id}: {result['steps']} steps")
 
-            # Close environment
+            # Close environment and cleanup XML file
             env.close()
+            xml_file = info.get("_xml_filename")
+            if xml_file and os.path.exists(xml_file):
+                try:
+                    os.remove(xml_file)
+                except Exception:
+                    pass
 
         except Exception as e:
             print(f"    ERROR in episode {episode_id}: {e}")
@@ -495,6 +504,12 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
                     "error": str(e),
                 }
             )
+            # Cleanup on error too
+            if "info" in dir() and info and info.get("_xml_filename"):
+                try:
+                    os.remove(info["_xml_filename"])
+                except Exception:
+                    pass
 
     # Calculate final metrics
     success_rate = successes / config.n_episodes if config.n_episodes > 0 else 0.0
