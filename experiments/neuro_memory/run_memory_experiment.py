@@ -803,12 +803,30 @@ class EpisodeRunner:
                 # Tier 1: Get recent errors (reflex feedback)
                 recent_errors = self._error_buffer
 
+                # Get current gripper state (CRITICAL for avoiding wrong actions)
+                obj_in_hand = env.get_object_in_hand()
+                holding_color = None
+                if obj_in_hand:
+                    # Convert brick_X to color name
+                    try:
+                        brick_id = int(obj_in_hand.split("_")[-1])
+                        # brick_descriptions contains color names like "yellow"
+                        if hasattr(env, "oracle") and env.oracle:
+                            idx = brick_id - min(env.oracle.brick_ids)
+                            if 0 <= idx < len(env.oracle.brick_descriptions):
+                                holding_color = env.oracle.brick_descriptions[idx]
+                        if not holding_color:
+                            holding_color = info.get("peg_labels", {}).get(obj_in_hand, obj_in_hand)
+                    except (ValueError, IndexError, AttributeError):
+                        holding_color = obj_in_hand
+
                 # Build enhanced prompt with all tiers
                 enhanced_prompt = self._build_tiered_prompt(
                     base_prompt=prompt,
                     principles=self._active_principles,
                     hypotheses=active_hypotheses,
                     recent_errors=recent_errors,
+                    holding_object=holding_color,
                 )
             else:
                 enhanced_prompt = prompt
@@ -1051,11 +1069,13 @@ class EpisodeRunner:
         principles: List[Principle],
         hypotheses: List[Any],
         recent_errors: List[Dict[str, Any]],
+        holding_object: Optional[str] = None,
     ) -> str:
         """
         Build prompt with three-tier memory injection.
 
         Tier Structure (in prompt order):
+        0. CURRENT STATE: What you're holding (critical for action validity!)
         1. Tier 3: VERIFIED PRINCIPLES (highest confidence, prominent display)
         2. Tier 2: ACTIVE HYPOTHESES (under testing, advisory)
         3. Tier 1: RECENT ERRORS (immediate reflex feedback)
@@ -1064,6 +1084,22 @@ class EpisodeRunner:
         This ordering ensures the agent sees the most reliable guidance first.
         """
         sections = []
+
+        # =====================================================================
+        # TIER 0: CURRENT STATE (CRITICAL - prevents invalid actions!)
+        # =====================================================================
+        if holding_object:
+            state_lines = [
+                "## 🤖 CURRENT STATE",
+                "",
+                f"⚠️ You are currently HOLDING: **{holding_object}**",
+                "",
+                "RULES:",
+                f"- You CANNOT 'pick up' another object while holding {holding_object}",
+                f"- You CAN 'insert {holding_object}' or 'put down {holding_object}' or 'reorient {holding_object}'",
+                "",
+            ]
+            sections.append("\n".join(state_lines))
 
         # =====================================================================
         # TIER 3: Verified Principles (PHASE 5 - Prominent Display)
