@@ -55,6 +55,7 @@ try:
         RoMemoStore,
         extract_symbolic_state,
     )
+    from roboworld.agent.vlm_api import UnifiedVLM  # For VLM-based policies
 except ImportError as e:
     print(f"ERROR: Failed to import roboworld modules: {e}")
     print("Make sure you're running from the reflect-vlm directory.")
@@ -278,6 +279,168 @@ class DebugLogger:
         summary_file = self.save_dir / "episode_summaries.jsonl"
         self._write(summary_file, summary)
 
+    def display_working_memory(
+        self,
+        learning_loop,
+        episode: int,
+    ):
+        """
+        Display current working memory state (hypotheses and principles).
+
+        This provides real-time visibility into what the memory system has learned.
+        """
+        if not self.enabled or not learning_loop:
+            return
+
+        stats = learning_loop.get_stats()
+
+        print("\n" + "=" * 60)
+        print(f"📊 WORKING MEMORY STATUS (Episode {episode})")
+        print("=" * 60)
+
+        # Principles
+        principles = learning_loop.principle_store.principles
+        active_principles = [p for p in principles if getattr(p, "status", "active") == "active"]
+        print(f"\n🏆 PRINCIPLES ({len(active_principles)} active / {len(principles)} total):")
+        if active_principles:
+            for i, p in enumerate(active_principles[:5], 1):
+                conf = int(p.confidence * 100)
+                ptype = getattr(p, "principle_type", "GENERAL")
+                if hasattr(ptype, "name"):
+                    ptype = ptype.name
+                print(f"  {i}. [{conf}%] [{ptype}] {p.content[:60]}...")
+        else:
+            print("  (none yet)")
+
+        # Hypotheses
+        hypotheses = learning_loop.hypothesis_store.hypotheses
+        proposed = [h for h in hypotheses if h.status.value == "proposed"]
+        testing = [h for h in hypotheses if h.status.value == "testing"]
+        verified = [h for h in hypotheses if h.status.value == "verified"]
+        refuted = [h for h in hypotheses if h.status.value == "refuted"]
+
+        print(f"\n💡 HYPOTHESES ({len(hypotheses)} total):")
+        print(
+            f"  📝 Proposed: {len(proposed)}, 🧪 Testing: {len(testing)}, ✅ Verified: {len(verified)}, ❌ Refuted: {len(refuted)}"
+        )
+
+        if testing:
+            print("\n  Currently Testing:")
+            for h in testing[:3]:
+                conf = int(h.confidence * 100)
+                print(f"    - [{conf}%] {h.statement[:55]}...")
+
+        if proposed:
+            print("\n  Proposed (awaiting test):")
+            for h in proposed[:3]:
+                print(f"    - {h.statement[:55]}...")
+
+        # Memory stats
+        print(
+            f"\n📦 MEMORY: {stats['memory']['total']} experiences, {stats['folding']['total_folded']} folded"
+        )
+        print("=" * 60 + "\n")
+
+
+# ============================================================================
+# VLM Policy Agent (for using external VLMs as action policy)
+# ============================================================================
+
+
+class VLMPolicyAgent:
+    """
+    Agent that uses an external VLM (GPT, Gemini, Qwen, Kimi) for action selection.
+
+    This provides an alternative to the LLaVA BC policy, allowing experimentation
+    with more capable VLMs that can better understand error feedback and principles.
+    """
+
+    def __init__(
+        self,
+        provider: str,
+        model: Optional[str] = None,
+        temperature: float = 0.1,
+    ):
+        """
+        Initialize VLM policy agent.
+
+        Args:
+            provider: VLM provider ("openai", "gemini", "qwen", "kimi")
+            model: Specific model name (or None for provider default)
+            temperature: Sampling temperature
+        """
+        self.vlm = UnifiedVLM(provider=provider, model=model)
+        self.temperature = temperature
+        self.provider = provider
+        self.model = model or self.vlm.default_model
+
+    def act(
+        self,
+        current_image: np.ndarray,
+        goal_image: np.ndarray,
+        prompt: str,
+    ) -> str:
+        """
+        Get action from VLM given current state, goal, and prompt.
+
+        Args:
+            current_image: Current observation (RGB numpy array)
+            goal_image: Goal state image (RGB numpy array)
+            prompt: Text prompt including principles, hypotheses, etc.
+
+        Returns:
+            Action string (e.g., "pick up blue", "insert red", "done")
+        """
+        # Build VLM prompt
+        vlm_prompt = f"""{prompt}
+
+Based on the goal image and current image, output ONLY the next action.
+Valid actions: pick up [color], put down [color], reorient [color], insert [color], done
+
+Your response should be ONLY the action, nothing else. Example: "pick up blue"
+"""
+
+        try:
+            # Call VLM with both images
+            response = self.vlm.generate(
+                prompt=vlm_prompt,
+                images=[goal_image, current_image],
+            )
+
+            # Parse action from response
+            action = self._parse_action(response)
+            return action
+
+        except Exception as e:
+            print(f"    [VLM Policy Error] {e}")
+            # Fallback to a safe action
+            return "done"
+
+    def _parse_action(self, response: str) -> str:
+        """Parse action from VLM response."""
+        response = response.strip().lower()
+
+        # Common action prefixes
+        valid_prefixes = ["pick up", "put down", "reorient", "insert", "done"]
+
+        # Try to find a valid action in the response
+        for line in response.split("\n"):
+            line = line.strip()
+            for prefix in valid_prefixes:
+                if line.startswith(prefix):
+                    # Extract the full action (prefix + color if applicable)
+                    if prefix == "done":
+                        return "done"
+                    # Get the color after the prefix
+                    parts = line.split()
+                    if len(parts) >= 3:  # e.g., "pick up blue"
+                        return f"{parts[0]} {parts[1]} {parts[2]}"
+                    elif len(parts) == 2:  # e.g., "insert blue"
+                        return f"{parts[0]} {parts[1]}"
+
+        # If no valid action found, return the raw response (may fail in env)
+        return response.split("\n")[0].strip()
+
 
 # ============================================================================
 # Configuration
@@ -298,12 +461,22 @@ class ExperimentConfig:
     max_steps_per_episode: int = 50
     camera_name: str = "table_back"  # Camera for rendering (matches run-rom.py default)
 
-    # Model paths (relative to project root, or absolute)
+    # ==========================================================================
+    # POLICY CONFIGURATION
+    # ==========================================================================
+    # Policy type: "bc" (LLaVA behavior cloning) or "vlm" (external VLM)
+    policy_type: str = "bc"  # "bc" or "vlm"
+
+    # For BC policy (LLaVA)
     base_model_path: str = "./ReflectVLM-llava-v1.5-13b-base"
     post_model_path: str = "./ReflectVLM-llava-v1.5-13b-post-trained"
     use_post_trained: bool = False  # If True, use post-trained model
 
-    # Memory system
+    # For VLM policy (external APIs)
+    policy_provider: Optional[str] = None  # "openai", "gemini", "qwen", "kimi"
+    policy_model: Optional[str] = None  # Specific model name
+
+    # Memory system (for consolidation/reflection, separate from policy)
     vlm_provider: Optional[str] = None  # "kimi", "openai", "gemini", "qwen", or None for rule-based
     vlm_model: Optional[str] = None
 
@@ -311,6 +484,10 @@ class ExperimentConfig:
     consolidation_interval: int = 10  # Episodes between consolidation runs
     min_experiences_for_consolidation: int = 5
     run_consolidation_async: bool = True
+
+    # Working memory display
+    show_working_memory: bool = True  # Show hypotheses/principles during run
+    working_memory_interval: int = 5  # Show every N episodes
 
     # Output
     save_dir: str = "logs/neuro_memory_exp"
@@ -483,6 +660,13 @@ class EpisodeRunner:
         else:
             self._active_hypotheses = []
 
+        # Track previous state for progress detection
+        prev_holding = None
+        repeated_action_count = 0
+        last_action = None
+        stuck_counter = 0  # Count consecutive stuck/no-progress steps
+        max_stuck_steps = 10  # Early terminate if stuck for too long
+
         # Camera name for rendering (matching run-rom.py default)
         camera_name = self.config.camera_name
 
@@ -530,7 +714,6 @@ class EpisodeRunner:
             # Get action from agent
             action = self.base_agent.act(img, goal_img, enhanced_prompt)
             action = str(action).strip()
-            action_history.append(action)
 
             # Check for done action
             if action.lower().strip() == "done":
@@ -539,6 +722,7 @@ class EpisodeRunner:
                 action_success = success
                 action_fail = not success
                 fail_tag = None if success else "incomplete"
+                action_history.append(action)
             else:
                 # Execute action using env.act_txt
                 err = env.act_txt(action)
@@ -546,8 +730,18 @@ class EpisodeRunner:
                 action_success = err == 0
                 fail_tag = f"err_{err}" if err != 0 else None
 
+                # =====================================================================
+                # CRITICAL FIX: Include error feedback in action history
+                # This helps the model understand what failed
+                # =====================================================================
+                if action_fail:
+                    # Add action with error feedback to history
+                    action_history.append(f"{action} [FAILED]")
+                else:
+                    action_history.append(action)
+
             # =====================================================================
-            # PHASE 1: Add errors to Tier 1 reflex buffer
+            # PHASE 1: Add errors to Tier 1 reflex buffer + stuck detection
             # =====================================================================
             if action_fail and fail_tag:
                 error_entry = {
@@ -560,6 +754,66 @@ class EpisodeRunner:
                 # Keep only last N errors
                 if len(self._error_buffer) > self._error_buffer_size:
                     self._error_buffer.pop(0)
+
+                # Stuck detection: if same action failed 3+ times, try to break loop
+                recent_failed = [e["action"] for e in self._error_buffer[-3:]]
+                if len(recent_failed) >= 3 and len(set(recent_failed)) == 1:
+                    print(f"    [STUCK] Detected repeated failure: {action}")
+                    # Add stronger hint to action history
+                    action_history[-1] = f"{action} [FAILED - DO NOT REPEAT THIS ACTION]"
+
+            # =====================================================================
+            # NO-PROGRESS DETECTION: Catch "successful" actions that don't change state
+            # =====================================================================
+            # Check current holding state
+            try:
+                current_holding = (
+                    env.get_object_in_hand() if hasattr(env, "get_object_in_hand") else None
+                )
+            except Exception:
+                current_holding = None
+
+            # Detect repeated same action
+            if action == last_action:
+                repeated_action_count += 1
+            else:
+                repeated_action_count = 1
+                last_action = action
+
+            # If action "succeeded" but state didn't change for insert/pick actions
+            is_stuck = False
+            if action_success and repeated_action_count >= 3:
+                action_type = action.split()[0].lower() if action else ""
+                if action_type == "insert" and current_holding is not None:
+                    # Insert "succeeded" but still holding = no progress
+                    print(f"    [NO-PROGRESS] Insert succeeded but still holding object")
+                    action_history[-1] = f"{action} [NO PROGRESS - TRY DIFFERENT ACTION]"
+                    action_success = False  # Mark as failure for learning
+                    fail_tag = "no_progress"
+                    is_stuck = True
+                elif action_type == "pick" and current_holding == prev_holding:
+                    # Pick "succeeded" but holding state unchanged = no progress
+                    print(f"    [NO-PROGRESS] Pick succeeded but not holding new object")
+                    action_history[-1] = f"{action} [NO PROGRESS - TRY DIFFERENT ACTION]"
+                    action_success = False
+                    fail_tag = "no_progress"
+                    is_stuck = True
+
+            # Update stuck counter
+            if action_fail or is_stuck:
+                stuck_counter += 1
+            else:
+                stuck_counter = 0  # Reset on successful progress
+
+            # Early termination if stuck for too long
+            if stuck_counter >= max_stuck_steps:
+                print(
+                    f"    [EARLY-TERM] Agent stuck for {stuck_counter} steps, terminating episode"
+                )
+                done = True
+                success = False
+
+            prev_holding = current_holding
 
             # =====================================================================
             # PHASE 3: Track action for attribution
@@ -786,25 +1040,47 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
     print(f"Mode: {config.mode}")
     print(f"Episodes: {config.n_episodes}")
     print(f"Save Dir: {save_dir}")
-    print(f"VLM Provider: {config.vlm_provider or 'rule-based'}")
+    print(f"Policy: {config.policy_type.upper()}", end="")
+    if config.policy_type == "vlm":
+        print(f" ({config.policy_provider}/{config.policy_model or 'default'})")
+    else:
+        print(f" (LLaVA)")
+    print(f"Reflection VLM: {config.vlm_provider or 'rule-based'}")
     print("=" * 60)
 
     # Save config
     with open(save_dir / "config.json", "w") as f:
         json.dump(vars(config), f, indent=2, default=str)
 
-    # Initialize base agent
-    print("\n[1/4] Loading base agent...")
-    model_path = config.get_model_path()
-    if not os.path.exists(model_path):
-        print(f"ERROR: Model not found at {model_path}")
-        sys.exit(1)
+    # =========================================================================
+    # Initialize Policy Agent (BC or VLM)
+    # =========================================================================
+    print("\n[1/4] Loading policy agent...")
 
-    base_agent = LlavaAgent(
-        model_path=model_path,
-        load_4bit=True,
-    )
-    print(f"  Loaded: {model_path}")
+    if config.policy_type == "vlm":
+        # Use external VLM as policy
+        if not config.policy_provider:
+            print("ERROR: --policy_provider required when --policy_type=vlm")
+            sys.exit(1)
+
+        base_agent = VLMPolicyAgent(
+            provider=config.policy_provider,
+            model=config.policy_model,
+            temperature=0.1,
+        )
+        print(f"  VLM Policy: {config.policy_provider}/{base_agent.model}")
+    else:
+        # Use LLaVA BC policy (default)
+        model_path = config.get_model_path()
+        if not os.path.exists(model_path):
+            print(f"ERROR: Model not found at {model_path}")
+            sys.exit(1)
+
+        base_agent = LlavaAgent(
+            model_path=model_path,
+            load_4bit=True,
+        )
+        print(f"  BC Policy (LLaVA): {model_path}")
 
     # Initialize learning loop (if memory mode)
     learning_loop = None
@@ -854,6 +1130,18 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
 
         if config.verbose and i % 10 == 0:
             print(f"\n  Episode {i + 1}/{config.n_episodes} (seed={seed})")
+
+        # =====================================================================
+        # Display working memory periodically
+        # =====================================================================
+        if (
+            config.show_working_memory
+            and debug_logger
+            and learning_loop
+            and i > 0
+            and i % config.working_memory_interval == 0
+        ):
+            debug_logger.display_working_memory(learning_loop, i)
 
         try:
             # Create environment
@@ -953,15 +1241,19 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    # Baseline (no memory)
+    # Baseline with LLaVA BC policy (no memory)
     python run_memory_experiment.py --mode baseline --n_episodes 50
 
-    # Memory with Kimi VLM
-    export MOONSHOT_API_KEY="your_key"
+    # Memory with LLaVA BC policy + Kimi reflection
     python run_memory_experiment.py --mode memory --provider kimi --n_episodes 100
 
-    # Memory with rule-based reflection (no API needed)
-    python run_memory_experiment.py --mode memory --provider rule --n_episodes 100
+    # Memory with GPT-4 Vision as policy + Kimi reflection
+    python run_memory_experiment.py --mode memory --policy_type vlm --policy_provider openai \\
+        --provider kimi --n_episodes 50
+
+    # Memory with Gemini as policy (no separate reflection VLM)
+    python run_memory_experiment.py --mode memory --policy_type vlm --policy_provider gemini \\
+        --provider rule --n_episodes 50
         """,
     )
 
@@ -984,30 +1276,66 @@ Examples:
         default=1000001,
         help="Starting seed for episodes",
     )
+
+    # ==========================================================================
+    # POLICY OPTIONS (what generates actions)
+    # ==========================================================================
+    parser.add_argument(
+        "--policy_type",
+        type=str,
+        default="bc",
+        choices=["bc", "vlm"],
+        help="Policy type: 'bc' (LLaVA behavior cloning) or 'vlm' (external VLM)",
+    )
+    parser.add_argument(
+        "--policy_provider",
+        type=str,
+        default=None,
+        choices=["openai", "gemini", "qwen", "kimi"],
+        help="VLM provider for policy (required if policy_type=vlm)",
+    )
+    parser.add_argument(
+        "--policy_model",
+        type=str,
+        default=None,
+        help="Specific VLM model for policy (e.g., 'gpt-4-vision-preview')",
+    )
+
+    # ==========================================================================
+    # REFLECTION OPTIONS (what generates hypotheses/principles)
+    # ==========================================================================
     parser.add_argument(
         "--provider",
         type=str,
         default="rule",
         choices=["rule", "kimi", "openai", "gemini", "qwen"],
-        help="VLM provider for reflection",
+        help="VLM provider for reflection/consolidation",
     )
     parser.add_argument(
         "--model",
         type=str,
         default=None,
-        help="Specific VLM model name",
+        help="Specific VLM model for reflection",
     )
+
+    # ==========================================================================
+    # BC POLICY OPTIONS (LLaVA)
+    # ==========================================================================
     parser.add_argument(
         "--base_model",
         type=str,
         default="./ReflectVLM-llava-v1.5-13b-base",
-        help="Path to base LLaVA model",
+        help="Path to base LLaVA model (for BC policy)",
     )
     parser.add_argument(
         "--use_post_trained",
         action="store_true",
-        help="Use post-trained model instead of base",
+        help="Use post-trained model instead of base (for BC policy)",
     )
+
+    # ==========================================================================
+    # OUTPUT OPTIONS
+    # ==========================================================================
     parser.add_argument(
         "--save_dir",
         type=str,
@@ -1025,6 +1353,18 @@ Examples:
         action="store_true",
         help="Print detailed progress",
     )
+    parser.add_argument(
+        "--show_memory",
+        action="store_true",
+        default=True,
+        help="Show working memory status during run",
+    )
+    parser.add_argument(
+        "--memory_interval",
+        type=int,
+        default=5,
+        help="Show working memory every N episodes",
+    )
 
     args = parser.parse_args()
 
@@ -1034,12 +1374,21 @@ Examples:
         mode=args.mode,
         seed_start=args.seed_start,
         n_episodes=args.n_episodes,
+        # Policy options
+        policy_type=args.policy_type,
+        policy_provider=args.policy_provider,
+        policy_model=args.policy_model,
+        # BC policy options
         base_model_path=args.base_model,
         use_post_trained=args.use_post_trained,
+        # Reflection options
         vlm_provider=args.provider if args.provider != "rule" else None,
         vlm_model=args.model,
+        # Output options
         save_dir=args.save_dir,
         verbose=args.verbose,
+        show_working_memory=args.show_memory,
+        working_memory_interval=args.memory_interval,
     )
 
     # Run experiment
