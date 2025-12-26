@@ -77,6 +77,209 @@ except ImportError as e:
 
 
 # ============================================================================
+# Debug Logger
+# ============================================================================
+
+
+class DebugLogger:
+    """
+    Comprehensive debug logger for memory experiments.
+
+    Logs detailed information about:
+    - Symbolic states
+    - Actions and their outcomes
+    - Hypotheses (proposed, verified, refuted)
+    - Principles (active, applied)
+    - Consolidation events
+    """
+
+    def __init__(self, save_dir: str, enabled: bool = True):
+        self.enabled = enabled
+        self.save_dir = Path(save_dir)
+        self.save_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create log files
+        self.symbolic_log = self.save_dir / "symbolic_states.jsonl"
+        self.hypothesis_log = self.save_dir / "hypotheses.jsonl"
+        self.principle_log = self.save_dir / "principles.jsonl"
+        self.action_log = self.save_dir / "actions.jsonl"
+        self.consolidation_log = self.save_dir / "consolidation.jsonl"
+
+        # Clear old logs
+        for log_file in [
+            self.symbolic_log,
+            self.hypothesis_log,
+            self.principle_log,
+            self.action_log,
+            self.consolidation_log,
+        ]:
+            if log_file.exists():
+                log_file.unlink()
+
+    def _write(self, log_file: Path, data: Dict):
+        """Write a JSON line to a log file."""
+        if not self.enabled:
+            return
+        with open(log_file, "a") as f:
+            f.write(json.dumps(data, default=str) + "\n")
+
+    def log_symbolic_state(
+        self,
+        episode_id: str,
+        step: int,
+        action: str,
+        symbolic_state: Optional[Dict],
+        action_success: bool,
+        fail_tag: Optional[str] = None,
+    ):
+        """Log a symbolic state observation."""
+        self._write(
+            self.symbolic_log,
+            {
+                "timestamp": datetime.now().isoformat(),
+                "episode_id": episode_id,
+                "step": step,
+                "action": action,
+                "success": action_success,
+                "fail_tag": fail_tag,
+                "symbolic_state": symbolic_state,
+            },
+        )
+        # Also print key info if verbose
+        if self.enabled and symbolic_state:
+            target = symbolic_state.get("target_signature") or "N/A"
+            holding = symbolic_state.get("holding_signature") or "N/A"
+            deps = symbolic_state.get("dependencies_satisfied", True)
+            print(
+                f"    [DEBUG] State: target={target}, holding={holding}, "
+                f"deps_ok={deps}, success={action_success}"
+            )
+
+    def log_action(
+        self,
+        episode_id: str,
+        step: int,
+        prompt: str,
+        action: str,
+        enhanced_prompt: Optional[str] = None,
+        principles_used: Optional[List] = None,
+    ):
+        """Log an action decision."""
+        self._write(
+            self.action_log,
+            {
+                "timestamp": datetime.now().isoformat(),
+                "episode_id": episode_id,
+                "step": step,
+                "action": action,
+                "prompt_length": len(prompt),
+                "enhanced_prompt_length": len(enhanced_prompt) if enhanced_prompt else 0,
+                "n_principles_used": len(principles_used) if principles_used else 0,
+                "principles": (
+                    [p.content[:50] + "..." for p in principles_used] if principles_used else []
+                ),
+            },
+        )
+
+    def log_hypothesis(
+        self,
+        hypothesis,
+        event: str = "created",
+        episode_id: Optional[str] = None,
+    ):
+        """Log a hypothesis event (created, verified, refuted)."""
+        self._write(
+            self.hypothesis_log,
+            {
+                "timestamp": datetime.now().isoformat(),
+                "event": event,
+                "episode_id": episode_id,
+                "hid": getattr(hypothesis, "hid", "unknown"),
+                "statement": hypothesis.statement,
+                "type": str(hypothesis.hypothesis_type),
+                "status": str(hypothesis.status),
+                "confidence": getattr(hypothesis, "confidence", 0.0),
+            },
+        )
+        print(f"    [HYPOTHESIS {event.upper()}] {hypothesis.statement[:80]}...")
+
+    def log_principle(
+        self,
+        principle,
+        event: str = "active",
+        episode_id: Optional[str] = None,
+    ):
+        """Log a principle event (created, applied, decayed)."""
+        self._write(
+            self.principle_log,
+            {
+                "timestamp": datetime.now().isoformat(),
+                "event": event,
+                "episode_id": episode_id,
+                "pid": getattr(principle, "pid", "unknown"),
+                "content": principle.content,
+                "confidence": principle.confidence,
+                "status": getattr(principle, "status", "active"),
+                "reinforcement_count": getattr(principle, "reinforcement_count", 0),
+                "prediction_errors": getattr(principle, "prediction_errors", 0),
+            },
+        )
+
+    def log_consolidation(
+        self,
+        n_experiences: int,
+        n_clusters: int,
+        n_hypotheses_before: int,
+        n_hypotheses_after: int,
+        n_principles: int,
+        details: Optional[Dict] = None,
+    ):
+        """Log a consolidation event."""
+        self._write(
+            self.consolidation_log,
+            {
+                "timestamp": datetime.now().isoformat(),
+                "n_experiences": n_experiences,
+                "n_clusters": n_clusters,
+                "hypotheses_before": n_hypotheses_before,
+                "hypotheses_after": n_hypotheses_after,
+                "new_hypotheses": n_hypotheses_after - n_hypotheses_before,
+                "n_principles": n_principles,
+                "details": details,
+            },
+        )
+        print(
+            f"    [CONSOLIDATION] {n_experiences} exp -> {n_clusters} clusters -> "
+            f"+{n_hypotheses_after - n_hypotheses_before} hypotheses"
+        )
+
+    def log_episode_summary(
+        self,
+        episode_id: str,
+        success: bool,
+        steps: int,
+        n_hypotheses: int,
+        n_principles: int,
+        active_principles: Optional[List] = None,
+    ):
+        """Log episode summary."""
+        summary = {
+            "timestamp": datetime.now().isoformat(),
+            "episode_id": episode_id,
+            "success": success,
+            "steps": steps,
+            "n_hypotheses": n_hypotheses,
+            "n_principles": n_principles,
+            "active_principles": (
+                [p.content[:50] for p in active_principles] if active_principles else []
+            ),
+        }
+        # Write to a separate summary file
+        summary_file = self.save_dir / "episode_summaries.jsonl"
+        self._write(summary_file, summary)
+
+
+# ============================================================================
 # Configuration
 # ============================================================================
 
@@ -113,6 +316,7 @@ class ExperimentConfig:
     save_dir: str = "logs/neuro_memory_exp"
     save_memory: bool = True
     verbose: bool = True
+    debug: bool = True  # Enable detailed debug logging
 
     def get_model_path(self) -> str:
         """Get the appropriate model path."""
@@ -222,11 +426,13 @@ class EpisodeRunner:
         oracle: Optional[AssemblyOracle],
         learning_loop: Optional[ScientificLearningLoop],
         config: ExperimentConfig,
+        debug_logger: Optional[DebugLogger] = None,
     ):
         self.base_agent = base_agent
         self.oracle = oracle
         self.learning_loop = learning_loop
         self.config = config
+        self.debug_logger = debug_logger
 
         # Track active principles for resonance checking
         self._active_principles: List[Principle] = []
@@ -319,6 +525,25 @@ class EpisodeRunner:
                     last_fail_tag=fail_tag,
                 )
 
+                # Debug log the symbolic state
+                if self.debug_logger:
+                    self.debug_logger.log_symbolic_state(
+                        episode_id=episode_id,
+                        step=step,
+                        action=action,
+                        symbolic_state=symbolic_state,
+                        action_success=action_success,
+                        fail_tag=fail_tag,
+                    )
+                    self.debug_logger.log_action(
+                        episode_id=episode_id,
+                        step=step,
+                        prompt=prompt,
+                        action=action,
+                        enhanced_prompt=enhanced_prompt if enhanced_prompt != prompt else None,
+                        principles_used=self._active_principles,
+                    )
+
                 self.learning_loop.record_experience(
                     action=action,
                     success=action_success,
@@ -338,6 +563,18 @@ class EpisodeRunner:
         # End episode in learning loop
         if self.learning_loop and self.config.mode == "memory":
             self.learning_loop.end_episode(success=success, episode_id=episode_id)
+
+            # Log episode summary
+            if self.debug_logger:
+                stats = self.learning_loop.get_stats()
+                self.debug_logger.log_episode_summary(
+                    episode_id=episode_id,
+                    success=success,
+                    steps=step,
+                    n_hypotheses=stats["hypotheses"]["total"],
+                    n_principles=stats["principles"]["total"],
+                    active_principles=self._active_principles,
+                )
 
         return {
             "episode_id": episode_id,
@@ -449,12 +686,19 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
     else:
         print("\n[2/4] Baseline mode - no learning loop")
 
+    # Create debug logger
+    debug_logger = None
+    if config.debug:
+        debug_logger = DebugLogger(save_dir=save_dir, enabled=True)
+        print(f"  Debug logging enabled: {save_dir}")
+
     # Create episode runner
     runner = EpisodeRunner(
         base_agent=base_agent,
         oracle=None,  # We'll create per-episode
         learning_loop=learning_loop,
         config=config,
+        debug_logger=debug_logger,
     )
 
     # Run episodes
