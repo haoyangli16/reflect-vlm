@@ -24,7 +24,7 @@ Usage:
 
 from __future__ import annotations
 
-import fix_triton_import
+# import fix_triton_import
 
 import argparse
 import json
@@ -460,7 +460,7 @@ class VLMPolicyAgent:
         self.vlm = UnifiedVLM(provider=provider, model=model)
         self.temperature = temperature
         self.provider = provider
-        self.model = model or self.vlm.default_model
+        self.model = self.vlm.model  # Get the actual model name from UnifiedVLM
 
     def act(
         self,

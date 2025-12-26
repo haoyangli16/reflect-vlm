@@ -29,9 +29,9 @@ export PYOPENGL_PLATFORM=egl
 export TRITON_PTXAS_PATH=""
 
 # CUDA setup
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
-export LD_LIBRARY_PATH=/usr/local/nvidia/lib64:/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}
-export BNB_CUDA_VERSION=117
+# export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+# export LD_LIBRARY_PATH=/usr/local/nvidia/lib64:/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}
+# export BNB_CUDA_VERSION=117
 
 # Performance optimizations
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
@@ -39,12 +39,12 @@ export TRANSFORMERS_VERBOSITY=error
 export TOKENIZERS_PARALLELISM=false
 
 # HuggingFace settings
-export HF_ENDPOINT=${HF_ENDPOINT:-https://hf-mirror.com}
-export HF_HOME="${HF_HOME:-/share/project/hf_cache}"
-export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME/transformers}"
-mkdir -p "$HF_HOME" "$TRANSFORMERS_CACHE" 2>/dev/null || true
-export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
-export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
+# export HF_ENDPOINT=${HF_ENDPOINT:-https://hf-mirror.com}
+# export HF_HOME="${HF_HOME:-/share/project/hf_cache}"
+# export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME/transformers}"
+# mkdir -p "$HF_HOME" "$TRANSFORMERS_CACHE" 2>/dev/null || true
+# export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+# export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
 
 # Python settings
 export PYTHONUNBUFFERED=1
