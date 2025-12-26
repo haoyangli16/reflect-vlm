@@ -818,9 +818,9 @@ class UnifiedVLM:
         "gemini": "gemini-3-flash-preview",
         "google": "gemini-3-flash-preview",
         # Use the model that works in your test file
-        "qwen": "qwen3-vl-235b-a22b-instruct",
-        "alibaba": "qwen3-vl-235b-a22b-instruct",
-        "dashscope": "qwen3-vl-235b-a22b-instruct",
+        "qwen": "qwen3-vl-flash",
+        "alibaba": "qwen3-vl-flash",
+        "dashscope": "qwen3-vl-flash",
         "kimi": "kimi-k2-0905-preview",
         "moonshot": "kimi-k2-0905-preview",
         "huggingface": "openai/gpt-oss-120b:cerebras",
@@ -897,9 +897,12 @@ def get_available_models() -> Dict[str, List[str]]:
             "gemini-2.5-pro",
         ],
         "qwen": [
+
             "qwen3-vl-235b-a22b-instruct",
-            "qwen3-vl-72b-instruct",
-            "qwen2.5-vl-72b-instruct",
+            "qwen3-vl-flash",
+            "qwen3-vl-plus",
+            "qwen-vl-max",
+            "qwen-vl-plus"
         ],
         "kimi": [
             "kimi-k2-0905-preview",

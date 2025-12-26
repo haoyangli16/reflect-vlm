@@ -29,9 +29,9 @@ export PYOPENGL_PLATFORM=egl
 export TRITON_PTXAS_PATH=""
 
 # CUDA setup
-# export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
-# export LD_LIBRARY_PATH=/usr/local/nvidia/lib64:/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}
-# export BNB_CUDA_VERSION=117
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+export LD_LIBRARY_PATH=/usr/local/nvidia/lib64:/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}
+export BNB_CUDA_VERSION=117
 
 # Performance optimizations
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
