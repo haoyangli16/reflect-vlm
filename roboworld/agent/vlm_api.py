@@ -928,7 +928,7 @@ def get_available_models() -> Dict[str, List[str]]:
 
 
 # Convenience export for checking available providers
-SUPPORTED_PROVIDERS = list(UnifiedVLM.PROVIDERS.keys())
+SUPPORTED_PROVIDERS = UnifiedVLM.PROVIDERS  # Dict mapping provider name -> class
 
 
 def test_vlm(provider: str = "openai", model: Optional[str] = None):

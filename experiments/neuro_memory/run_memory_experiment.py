@@ -134,8 +134,8 @@ def create_environment(seed: int, render_mode: str = "offscreen") -> Tuple[Frank
     Returns:
         Tuple of (environment, info_dict)
     """
-    # Generate the board
-    info = generate_xml(seed=seed)
+    # Generate the board - returns (xml, info) tuple
+    xml, info = generate_xml(seed=seed)
 
     # Extract shape information
     brick_shapes = info.get("brick_shapes", {})

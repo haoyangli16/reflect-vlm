@@ -231,9 +231,10 @@ def test_environment_generation():
     try:
         from roboworld.envs.generator import generate_xml
 
-        info = generate_xml(seed=1000001)
-        print(f"  ✓ Generated board: {info['board_name']}")
-        print(f"  ✓ Pieces: {len(info['peg_names'])}")
+        # generate_xml returns (xml, info) tuple
+        xml, info = generate_xml(seed=1000001)
+        print(f"  ✓ Generated board: {info.get('board_name', 'N/A')}")
+        print(f"  ✓ Pieces: {len(info.get('peg_names', []))}")
         print(f"  ✓ Shape info available: {'brick_shapes' in info}")
 
         if "brick_shapes" in info:
