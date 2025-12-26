@@ -807,18 +807,8 @@ class EpisodeRunner:
                 obj_in_hand = env.get_object_in_hand()
                 holding_color = None
                 if obj_in_hand:
-                    # Convert brick_X to color name
-                    try:
-                        brick_id = int(obj_in_hand.split("_")[-1])
-                        # brick_descriptions contains color names like "yellow"
-                        if hasattr(env, "oracle") and env.oracle:
-                            idx = brick_id - min(env.oracle.brick_ids)
-                            if 0 <= idx < len(env.oracle.brick_descriptions):
-                                holding_color = env.oracle.brick_descriptions[idx]
-                        if not holding_color:
-                            holding_color = info.get("peg_labels", {}).get(obj_in_hand, obj_in_hand)
-                    except (ValueError, IndexError, AttributeError):
-                        holding_color = obj_in_hand
+                    # Convert brick_X to color name using peg_labels
+                    holding_color = self._brick_to_color(obj_in_hand, info)
 
                 # Build enhanced prompt with all tiers
                 enhanced_prompt = self._build_tiered_prompt(
@@ -1072,40 +1062,59 @@ class EpisodeRunner:
         holding_object: Optional[str] = None,
     ) -> str:
         """
-        Build prompt with three-tier memory injection.
+        Build prompt with proper ordering for human-like reading.
 
-        Tier Structure (in prompt order):
-        0. CURRENT STATE: What you're holding (critical for action validity!)
-        1. Tier 3: VERIFIED PRINCIPLES (highest confidence, prominent display)
-        2. Tier 2: ACTIVE HYPOTHESES (under testing, advisory)
-        3. Tier 1: RECENT ERRORS (immediate reflex feedback)
-        4. Base prompt (original action request)
-
-        This ordering ensures the agent sees the most reliable guidance first.
+        CORRECT Order (Task → State → Memory → Reflex → Query):
+        1. TASK DESCRIPTION (base_prompt) - What the robot needs to do
+        2. CURRENT STATE - What you're holding (critical!)
+        3. LONG-TERM MEMORY - Principles (high confidence rules)
+        4. WORKING MEMORY - Hypotheses (testing)
+        5. REFLEX MEMORY - Recent errors (avoid repeating)
         """
+        # Start with task description (the original base prompt)
+        # But we need to split it to insert state info at the right place
+
         sections = []
 
         # =====================================================================
-        # TIER 0: CURRENT STATE (CRITICAL - prevents invalid actions!)
+        # 1. TASK DESCRIPTION FIRST (extracted from base_prompt)
+        # =====================================================================
+        # The base_prompt contains the full task description
+        sections.append(base_prompt)
+
+        # =====================================================================
+        # 2. CURRENT STATE (CRITICAL - prevents invalid actions!)
         # =====================================================================
         if holding_object:
             state_lines = [
+                "",
+                "---",
                 "## 🤖 CURRENT STATE",
                 "",
                 f"⚠️ You are currently HOLDING: **{holding_object}**",
                 "",
-                "RULES:",
+                "IMPORTANT RULES:",
                 f"- You CANNOT 'pick up' another object while holding {holding_object}",
-                f"- You CAN 'insert {holding_object}' or 'put down {holding_object}' or 'reorient {holding_object}'",
+                f"- You CAN ONLY: 'insert {holding_object}' or 'put down {holding_object}' or 'reorient {holding_object}'",
+                "",
+            ]
+            sections.append("\n".join(state_lines))
+        else:
+            state_lines = [
+                "",
+                "---",
+                "## 🤖 CURRENT STATE",
+                "",
+                "Your gripper is EMPTY. You can 'pick up' any object.",
                 "",
             ]
             sections.append("\n".join(state_lines))
 
         # =====================================================================
-        # TIER 3: Verified Principles (PHASE 5 - Prominent Display)
+        # 3. LONG-TERM MEMORY: Verified Principles
         # =====================================================================
         if principles:
-            principle_lines = ["## 🏆 LEARNED PRINCIPLES (Apply these first!)"]
+            principle_lines = ["## 🏆 LEARNED PRINCIPLES (Apply these!)"]
             principle_lines.append("")
             for i, p in enumerate(principles[:5], 1):  # Max 5 principles
                 conf_pct = int(p.confidence * 100)
@@ -1117,22 +1126,22 @@ class EpisodeRunner:
             sections.append("\n".join(principle_lines))
 
         # =====================================================================
-        # TIER 2: Active Hypotheses (PHASE 2 - Injection)
+        # 4. WORKING MEMORY: Active Hypotheses (under testing)
         # =====================================================================
         if hypotheses:
-            hypo_lines = ["## 💡 HYPOTHESES (Under Testing - Consider but verify)"]
+            hypo_lines = ["## 💡 HYPOTHESES (Consider but verify)"]
             hypo_lines.append("")
             for i, h in enumerate(hypotheses[:3], 1):  # Max 3 hypotheses
                 h_type = getattr(h, "hypothesis_type", "GENERAL")
                 if hasattr(h_type, "name"):
                     h_type = h_type.name
                 statement = getattr(h, "statement", str(h))
-                hypo_lines.append(f"{i}. [TESTING] [{h_type}] {statement}")
+                hypo_lines.append(f"{i}. [{h_type}] {statement}")
             hypo_lines.append("")
             sections.append("\n".join(hypo_lines))
 
         # =====================================================================
-        # TIER 1: Recent Errors (PHASE 1 - Reflex)
+        # 5. REFLEX MEMORY: Recent Errors
         # =====================================================================
         if recent_errors:
             error_lines = ["## ⚠️ RECENT ERRORS (Avoid repeating!)"]
@@ -1144,13 +1153,43 @@ class EpisodeRunner:
             error_lines.append("")
             sections.append("\n".join(error_lines))
 
-        # Combine all sections with base prompt
-        if sections:
-            memory_context = "\n".join(sections)
-            # Inject memory context before the base prompt
-            return f"{memory_context}\n---\n\n{base_prompt}"
-        else:
-            return base_prompt
+        # Combine all sections
+        return "\n".join(sections)
+
+    def _brick_to_color(self, brick_name: str, info: Dict[str, Any]) -> str:
+        """
+        Convert internal brick name (e.g., 'brick_2') to color name (e.g., 'yellow').
+
+        This grounding is critical because:
+        - The VLM sees colors in images and expects color-based actions
+        - The internal simulator uses brick_X naming
+        - Actions are specified as 'pick up yellow', not 'pick up brick_2'
+        """
+        try:
+            # Extract brick ID (e.g., 'brick_2' -> 2)
+            brick_id = int(brick_name.split("_")[-1])
+
+            # Get peg_names and peg_labels from info
+            peg_names = info.get("peg_names", [])
+            peg_labels = info.get("peg_labels", [])
+
+            # Find the index of this brick in peg_names
+            for i, peg_name in enumerate(peg_names):
+                if peg_name == brick_name and i < len(peg_labels):
+                    return peg_labels[i]  # Return the color
+
+            # Fallback: try using brick_id directly as index
+            peg_ids = info.get("peg_ids", [])
+            if brick_id in peg_ids:
+                idx = peg_ids.index(brick_id)
+                if idx < len(peg_labels):
+                    return peg_labels[idx]
+
+            # Last resort: return the original name
+            return brick_name
+
+        except (ValueError, IndexError, AttributeError):
+            return brick_name
 
     def _get_expected_action_type(self, env: FrankaAssemblyEnv) -> Optional[str]:
         """Get the expected action type based on current state."""
