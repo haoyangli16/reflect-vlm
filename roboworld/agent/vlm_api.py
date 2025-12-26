@@ -492,7 +492,27 @@ class OpenAIVLM(BaseVLM):
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
-            print(f"[OpenAI] API error: {e}")
+            error_str = str(e)
+            # Provide more helpful error messages
+            if (
+                "401" in error_str
+                or "Invalid Authentication" in error_str
+                or "Unauthorized" in error_str
+            ):
+                print(
+                    f"[OpenAI] API authentication error: {e}\n"
+                    f"  Check that your API key is correct and has proper permissions.\n"
+                    f"  Base URL: {getattr(self.client, 'base_url', 'default')}"
+                )
+            elif "404" in error_str or "Not Found" in error_str:
+                print(
+                    f"[OpenAI] API endpoint not found: {e}\n"
+                    f"  Check that the base URL and model name are correct.\n"
+                    f"  Base URL: {getattr(self.client, 'base_url', 'default')}\n"
+                    f"  Model: {self.model}"
+                )
+            else:
+                print(f"[OpenAI] API error: {e}")
             return ""
 
 
@@ -631,6 +651,13 @@ class QwenVLM(BaseVLM):
                 "DashScope API key required. Set DASHSCOPE_API_KEY or QWEN_API_KEY env var."
             )
 
+        # Validate API key format (DashScope keys typically start with 'sk-')
+        if not (self.api_key.startswith("sk-") or len(self.api_key) > 20):
+            print(
+                f"[Qwen] Warning: API key format may be incorrect. "
+                f"DashScope keys typically start with 'sk-' and are longer than 20 characters."
+            )
+
         try:
             import dashscope
             from dashscope import MultiModalConversation
@@ -680,7 +707,7 @@ class QwenVLM(BaseVLM):
         """Generate using DashScope API."""
         messages = []
 
-        # System message
+        # System message (DashScope format)
         if system_prompt:
             messages.append({"role": "system", "content": [{"text": system_prompt}]})
 
@@ -704,13 +731,46 @@ class QwenVLM(BaseVLM):
                 temperature=temperature,
             )
 
+            # Check response status
             if response.status_code == 200:
-                return response.output.choices[0].message.content[0]["text"].strip()
+                # Extract text from response
+                if hasattr(response, "output") and response.output:
+                    if hasattr(response.output, "choices") and response.output.choices:
+                        message = response.output.choices[0].message
+                        if hasattr(message, "content") and message.content:
+                            # content is a list of dicts with "text" or "image" keys
+                            text_parts = [
+                                item.get("text", "")
+                                for item in message.content
+                                if isinstance(item, dict) and "text" in item
+                            ]
+                            if text_parts:
+                                return " ".join(text_parts).strip()
+                            # Fallback: try direct access
+                            if isinstance(message.content, list) and len(message.content) > 0:
+                                if isinstance(message.content[0], dict):
+                                    return message.content[0].get("text", "").strip()
+                                elif isinstance(message.content[0], str):
+                                    return message.content[0].strip()
+                            elif isinstance(message.content, str):
+                                return message.content.strip()
+                print(f"[Qwen] Unexpected response format: {response}")
+                return ""
             else:
-                print(f"[Qwen] API error: {response.code} - {response.message}")
+                # Better error reporting
+                error_msg = getattr(response, "message", "Unknown error")
+                error_code = getattr(response, "code", "Unknown")
+                print(f"[Qwen] API error: {error_code} - {error_msg}")
+                if hasattr(response, "request_id"):
+                    print(f"[Qwen] Request ID: {response.request_id}")
                 return ""
         except Exception as e:
+            import traceback
+
             print(f"[Qwen] API error: {e}")
+            print(f"[Qwen] Error type: {type(e).__name__}")
+            # Print traceback for debugging
+            traceback.print_exc()
             return ""
 
     def _generate_openai_compatible(
@@ -766,22 +826,27 @@ class KimiVLM(OpenAIVLM):
     Kimi (Moonshot AI) Vision models.
 
     Compatible with OpenAI API.
-    API Key: MOONSHOT_API_KEY environment variable
-    Base URL: https://api.moonshot.cn/v1
+    API Key: MOONSHOT_API_KEY or KIMI_API_KEY environment variable
+    Base URL: https://api.moonshot.cn/v1 (default)
     """
 
     def __init__(
         self,
-        model: str = "moonshot-v1-8k-vision-preview",
+        model: str = "kimi-k2-0905-preview",
         api_key: Optional[str] = None,
-        base_url: Optional[str] = "https://api.moonshot.cn/v1",
+        base_url: Optional[str] = None,
         **kwargs,
     ):
-        api_key = api_key or os.environ.get("MOONSHOT_API_KEY")
+        # Check for API key in multiple env vars
+        api_key = api_key or os.environ.get("MOONSHOT_API_KEY") or os.environ.get("KIMI_API_KEY")
         if not api_key:
             raise ValueError(
-                "Moonshot API key required. Set MOONSHOT_API_KEY env var or pass api_key."
+                "Moonshot/Kimi API key required. Set MOONSHOT_API_KEY or KIMI_API_KEY env var or pass api_key."
             )
+
+        # Default base URL for Moonshot API
+        if base_url is None:
+            base_url = "https://api.moonshot.cn/v1"
 
         super().__init__(model=model, api_key=api_key, base_url=base_url, **kwargs)
 
