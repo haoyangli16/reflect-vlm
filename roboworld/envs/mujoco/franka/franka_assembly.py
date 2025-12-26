@@ -8,11 +8,25 @@ from roboworld.envs.generator import get_color_name
 
 
 class FrankaAssemblyEnv(FrankaEnv):
-
-    def __init__(self, board_name, fixture_name, peg_names, peg_descriptions, model_name="main.xml",
-                 render_mode='offscreen', frame_skip=5, max_episode_length=5000, grid_arrangement=False,
-                 control_mode="script",
-                 **kwargs):
+    def __init__(
+        self,
+        board_name,
+        fixture_name,
+        peg_names,
+        peg_descriptions,
+        model_name="main.xml",
+        render_mode="offscreen",
+        frame_skip=5,
+        max_episode_length=5000,
+        grid_arrangement=False,
+        control_mode="script",
+        # NEW: Shape information parameters
+        brick_shapes=None,
+        color_to_signature=None,
+        signature_to_color=None,
+        dependency_signatures=None,
+        **kwargs,
+    ):
         hand_low = (-0.5, -0.7, 0)
         hand_high = (1, 0.5, 1.5)
 
@@ -24,22 +38,22 @@ class FrankaAssemblyEnv(FrankaEnv):
             hand_high=hand_high,
             render_mode=render_mode,
             frame_skip=frame_skip,
-            **kwargs
+            **kwargs,
         )
         self.max_path_length = max_episode_length
-        self.grid_arrangement=grid_arrangement
+        self.grid_arrangement = grid_arrangement
         assert control_mode in {"script"}, f"Unknown control mode: {control_mode}."
         self.control_mode = control_mode
 
         self.init_config = {
-            'obj_init_pos': np.array((0, 0.6, 0.02), dtype=np.float32),
-            'hand_init_pos': np.array((0., 0., 0.9), dtype=np.float32),
-            'hand_init_quat': np.array((1., 0., 0., 0.), dtype=np.float32)
+            "obj_init_pos": np.array((0, 0.6, 0.02), dtype=np.float32),
+            "hand_init_pos": np.array((0.0, 0.0, 0.9), dtype=np.float32),
+            "hand_init_quat": np.array((1.0, 0.0, 0.0, 0.0), dtype=np.float32),
         }
         self.goal = np.array([0.1, 0.8, 0.1], dtype=np.float32)
-        self.obj_init_pos = self.init_config['obj_init_pos']
-        self.hand_init_pos = self.init_config['hand_init_pos']
-        self.hand_init_quat = self.init_config['hand_init_quat']
+        self.obj_init_pos = self.init_config["obj_init_pos"]
+        self.hand_init_pos = self.init_config["hand_init_pos"]
+        self.hand_init_quat = self.init_config["hand_init_quat"]
         self.robot_base_pos = self.get_body_pos("link0")
 
         self.board_name = board_name
@@ -56,18 +70,91 @@ class FrankaAssemblyEnv(FrankaEnv):
             self.peg_colors.append(color)
         self.peg_ids = [self.model.body(name).id for name in peg_names]
 
-        self.board_pos_low    = ( 0.00,  0.15, 0.50)
-        self.board_pos_high   = ( 0.09,  0.20, 0.50)
-        self.fixture_pos_low  = (-0.20,  0.10, 0.50)
-        self.fixture_pos_high = (-0.20,  0.20, 0.50)
-        self.peg_pos_low      = (-0.30, -0.50, 0.50)
-        self.peg_pos_high     = ( 0.20, -0.05, 0.50)
+        self.board_pos_low = (0.00, 0.15, 0.50)
+        self.board_pos_high = (0.09, 0.20, 0.50)
+        self.fixture_pos_low = (-0.20, 0.10, 0.50)
+        self.fixture_pos_high = (-0.20, 0.20, 0.50)
+        self.peg_pos_low = (-0.30, -0.50, 0.50)
+        self.peg_pos_high = (0.20, -0.05, 0.50)
 
-        self.object_init_poses = {peg_name: {
-            "pos": self.get_body_pos(peg_name), "quat": self.get_body_quat(peg_name)
-        } for peg_name in peg_names}
+        self.object_init_poses = {
+            peg_name: {"pos": self.get_body_pos(peg_name), "quat": self.get_body_quat(peg_name)}
+            for peg_name in peg_names
+        }
 
         self.goal_images = None
+
+        # NEW: Store shape information for symbolic state
+        self.brick_shapes = brick_shapes or {}
+        self.color_to_signature = color_to_signature or {}
+        self.signature_to_color = signature_to_color or {}
+        self.dependency_signatures = dependency_signatures or []
+
+        # Build additional lookup tables
+        self._build_shape_lookups()
+
+    def _build_shape_lookups(self):
+        """Build lookup tables for shape-based queries."""
+        # Color to shape signature (for quick lookup)
+        self.peg_signatures = []
+        for name in self.peg_names:
+            if name in self.brick_shapes:
+                self.peg_signatures.append(self.brick_shapes[name]["signature"])
+            else:
+                # Fallback: use color-based description
+                self.peg_signatures.append(f"unknown_{name}")
+
+        # Build color-to-signature map from peg data
+        self.color_signature_map = {}
+        for i, (name, color) in enumerate(zip(self.peg_names, self.peg_colors)):
+            if name in self.brick_shapes:
+                self.color_signature_map[color] = self.brick_shapes[name]["signature"]
+
+        # Build signature-to-color map (for this episode)
+        self.signature_color_map = {v: k for k, v in self.color_signature_map.items()}
+
+    def get_signature_for_color(self, color: str) -> str:
+        """Get the shape signature for a given color in this episode."""
+        return self.color_signature_map.get(color, f"unknown_{color}")
+
+    def get_color_for_signature(self, signature: str) -> str:
+        """Get the color for a given shape signature in this episode."""
+        return self.signature_color_map.get(signature, "unknown")
+
+    def get_shape_features(self, color: str) -> dict:
+        """Get detailed shape features for a piece by its color."""
+        # Find the brick name for this color
+        for name, shapes in self.brick_shapes.items():
+            if shapes.get("color") == color:
+                return shapes.get("shape_features", {})
+        return {}
+
+    def get_piece_dependencies(self, color: str) -> dict:
+        """
+        Get dependency information for a piece.
+
+        Returns:
+            dict with:
+            - 'blocks': list of signatures this piece blocks
+            - 'blocked_by': list of signatures that block this piece
+        """
+        signature = self.get_signature_for_color(color)
+
+        blocks = []
+        blocked_by = []
+
+        for dep in self.dependency_signatures:
+            if dep["blocker_signature"] == signature:
+                blocks.append(dep["blocked_signature"])
+            if dep["blocked_signature"] == signature:
+                blocked_by.append(dep["blocker_signature"])
+
+        return {
+            "blocks": blocks,
+            "blocked_by": blocked_by,
+            "blocks_colors": [self.get_color_for_signature(s) for s in blocks],
+            "blocked_by_colors": [self.get_color_for_signature(s) for s in blocked_by],
+        }
 
     @property
     def model_name(self):
@@ -82,7 +169,7 @@ class FrankaAssemblyEnv(FrankaEnv):
 
         if self.random_init:
             for i, body_name in enumerate(self.peg_names):
-                self.set_body_pos(body_name, np.array([2., i, 0.]))
+                self.set_body_pos(body_name, np.array([2.0, i, 0.0]))
             is_valid = False
             for k in range(max_trials):
                 is_valid = self.randomize_object_poses()
@@ -97,9 +184,13 @@ class FrankaAssemblyEnv(FrankaEnv):
 
         return self._get_obs()
 
-    def randomize_partial_assembly(self, min_pegs_to_assemble=1, max_pegs_to_assemble=None,
-                                   camera_names=None, full_assembly=False):
-
+    def randomize_partial_assembly(
+        self,
+        min_pegs_to_assemble=1,
+        max_pegs_to_assemble=None,
+        camera_names=None,
+        full_assembly=False,
+    ):
         if max_pegs_to_assemble is None:
             max_pegs_to_assemble = len(self.peg_names)
 
@@ -119,11 +210,15 @@ class FrankaAssemblyEnv(FrankaEnv):
         if full_assembly:
             pegs_to_assemble = self.peg_names
         else:
-            pegs_to_assemble = list(np.random.choice(
-                self.peg_names,
-                size=np.random.randint(min_pegs_to_assemble, max(min_pegs_to_assemble + 1, max_pegs_to_assemble)),
-                replace=False
-            ))
+            pegs_to_assemble = list(
+                np.random.choice(
+                    self.peg_names,
+                    size=np.random.randint(
+                        min_pegs_to_assemble, max(min_pegs_to_assemble + 1, max_pegs_to_assemble)
+                    ),
+                    replace=False,
+                )
+            )
 
         # reset initial poses of the pegs to be assembled
         for peg_name in reversed(self.peg_names):
@@ -137,7 +232,6 @@ class FrankaAssemblyEnv(FrankaEnv):
         raise NotImplementedError
 
     def randomize_object_poses(self, max_trials_per_object=50, debug=False):
-
         def get_rand_quat(euler_init=None, free_axes="z"):
             if euler_init is None:
                 rand_euler = np.zeros(3)
@@ -219,7 +313,9 @@ class FrankaAssemblyEnv(FrankaEnv):
                     body_id2 = self.model.geom(con.geom2).bodyid
                     assert len(body_id2) == 1
                     body_id2 = body_id2[0]
-                    if body_id1 in self.peg_ids[:i] + [self.board_id] and body_id2 in self.peg_ids[:i] + [self.board_id]:
+                    if body_id1 in self.peg_ids[:i] + [self.board_id] and body_id2 in self.peg_ids[
+                        :i
+                    ] + [self.board_id]:
                         collision = True
                         if debug:
                             print("Constraint 1 violated")
@@ -239,7 +335,7 @@ class FrankaAssemblyEnv(FrankaEnv):
 
                 # Constraint 3: object grasp pose is reachable
                 reachable = True
-                for name in self.peg_names[:i+1]:
+                for name in self.peg_names[: i + 1]:
                     pos = self.get_body_pos(name)
                     dis_to_base = np.linalg.norm(pos - self.robot_base_pos)
                     if not (0.3 <= dis_to_base <= 0.74):
@@ -264,8 +360,10 @@ class FrankaAssemblyEnv(FrankaEnv):
         obj_in_hand = self.get_object_in_hand()
         if obj_in_hand is not None:
             if obj_in_hand != obj_name:
-                print(f"Cannot pick up `{obj_name}` since another object is grasped in hand. "
-                      f"(`{obj_in_hand}` is in hand)")
+                print(
+                    f"Cannot pick up `{obj_name}` since another object is grasped in hand. "
+                    f"(`{obj_in_hand}` is in hand)"
+                )
                 err = -1
             else:
                 print(f"Should not pick up `{obj_name}` since it is already in hand.")
@@ -279,9 +377,11 @@ class FrankaAssemblyEnv(FrankaEnv):
 
     def done_pick_up(self, obj_name):
         self.goto(quat=[1, 0, 0, 0], pos_err_th=0.05, quat_err_th=0.01)
-        return self.object_is_in_hand(obj_name) and \
-            np.abs(self.eef_pos[-1] - 0.8) < 0.05 and \
-            self.quat_err(self.eef_quat, np.array([1, 0, 0, 0])) < 0.01
+        return (
+            self.object_is_in_hand(obj_name)
+            and np.abs(self.eef_pos[-1] - 0.8) < 0.05
+            and self.quat_err(self.eef_quat, np.array([1, 0, 0, 0])) < 0.01
+        )
 
     def act_put_down(self, obj_name):
         err = 0
@@ -293,9 +393,11 @@ class FrankaAssemblyEnv(FrankaEnv):
         return err
 
     def done_put_down(self, obj_name):
-        return not self.object_is_in_hand(obj_name) and \
-            self.pos_err(self.eef_pos, self.hand_init_pos) < 0.002 and \
-            self.quat_err(self.eef_quat, self.hand_init_quat) < 0.002
+        return (
+            not self.object_is_in_hand(obj_name)
+            and self.pos_err(self.eef_pos, self.hand_init_pos) < 0.002
+            and self.quat_err(self.eef_quat, self.hand_init_quat) < 0.002
+        )
 
     def act_insert(self, obj_name):
         err = 0
@@ -307,8 +409,10 @@ class FrankaAssemblyEnv(FrankaEnv):
         return err
 
     def done_insert(self, obj_name):
-        return self.pos_err(self.eef_pos, self.hand_init_pos) < 0.002 and \
-            self.quat_err(self.eef_quat, self.hand_init_quat) < 0.002
+        return (
+            self.pos_err(self.eef_pos, self.hand_init_pos) < 0.002
+            and self.quat_err(self.eef_quat, self.hand_init_quat) < 0.002
+        )
 
     def act_reorient(self, obj_name):
         err = 0
@@ -320,12 +424,16 @@ class FrankaAssemblyEnv(FrankaEnv):
         return err
 
     def done_reorient(self, obj_name):
-        return self.object_is_in_hand(obj_name) and self.object_is_upright(obj_name) and \
-            np.abs(self.eef_pos[-1] - 1.0) < 0.05 and self.quat_err(self.eef_quat, np.array([1, 0, 0, 0])) < 0.01
+        return (
+            self.object_is_in_hand(obj_name)
+            and self.object_is_upright(obj_name)
+            and np.abs(self.eef_pos[-1] - 1.0) < 0.05
+            and self.quat_err(self.eef_quat, np.array([1, 0, 0, 0])) < 0.01
+        )
 
     def act_txt(self, text):
         text_split = text.split()
-        act = " ".join(text_split[:max(1, len(text_split) - 1)])
+        act = " ".join(text_split[: max(1, len(text_split) - 1)])
         obj = text_split[-1]
 
         peg_ind = self.peg_colors.index(obj)
@@ -373,20 +481,24 @@ class FrankaAssemblyEnv(FrankaEnv):
 
 
 from enum import Enum
+
+
 class State(Enum):
-    DONE = 1        # brick: is properly inserted into board
-                    # global: all assembled
-    READY = 2       # brick: is not inserted yet but ready to be manipulated. (Note: this only ensures that
-                    # the bricks that should be inserted BEFORE this one are inserted already. It's still
-                    # possible that this brick cannot be inserted right now because some brick that should
-                    # be inserted AFTER this one is inserted first and causes blocking, in which case
-                    # that brick should have a BAD state and should be removed first.)
-                    # global: some brick should be READY or BAD_D
-    BAD_B = 3       # brick: is in BAD state since it's Blocking other bricks, need to be removed
-                    # global: need to reset some brick(s) to proceed
-    BAD_D = 4       # brick: is in BAD state since it's Down, need to be reoriented
-    BLOCKED_P = 5   # brick: is BLOCKED since some Predecessor brick(s) should be inserted before
-    BLOCKED_S = 6   # brick: is BLOCKED since some Successor brick(s) is inserted before
+    DONE = 1  # brick: is properly inserted into board
+    # global: all assembled
+    READY = (
+        2  # brick: is not inserted yet but ready to be manipulated. (Note: this only ensures that
+    )
+    # the bricks that should be inserted BEFORE this one are inserted already. It's still
+    # possible that this brick cannot be inserted right now because some brick that should
+    # be inserted AFTER this one is inserted first and causes blocking, in which case
+    # that brick should have a BAD state and should be removed first.)
+    # global: some brick should be READY or BAD_D
+    BAD_B = 3  # brick: is in BAD state since it's Blocking other bricks, need to be removed
+    # global: need to reset some brick(s) to proceed
+    BAD_D = 4  # brick: is in BAD state since it's Down, need to be reoriented
+    BLOCKED_P = 5  # brick: is BLOCKED since some Predecessor brick(s) should be inserted before
+    BLOCKED_S = 6  # brick: is BLOCKED since some Successor brick(s) is inserted before
 
     @property
     def description(self):
@@ -396,13 +508,18 @@ class State(Enum):
             self.BAD_B: "BAD (blocking other bricks)",
             self.BAD_D: "BAD (is down)",
             self.BLOCKED_P: "BLOCKED (by predecessor)",
-            self.BLOCKED_S: "BLOCKED (by successor)"
+            self.BLOCKED_S: "BLOCKED (by successor)",
         }[self]
 
 
 class AssemblyOracle(object):
-
-    def __init__(self, brick_ids: list, brick_descriptions: list, dependencies: dict, env: FrankaAssemblyEnv = None):
+    def __init__(
+        self,
+        brick_ids: list,
+        brick_descriptions: list,
+        dependencies: dict,
+        env: FrankaAssemblyEnv = None,
+    ):
         super(AssemblyOracle, self).__init__()
         self.brick_ids = brick_ids.copy()
 
@@ -413,7 +530,7 @@ class AssemblyOracle(object):
         self.to_neighbors = {ind: [] for ind in brick_ids}
         self.from_neighbors = {ind: [] for ind in brick_ids}
         self.in_deg = {ind: 0 for ind in brick_ids}
-        for (u, v) in dependencies:
+        for u, v in dependencies:
             self.to_neighbors[u].append(v)
             self.from_neighbors[v].append(u)
             self.in_deg[v] += 1
@@ -451,7 +568,9 @@ class AssemblyOracle(object):
 
     def _check_obj_inboard(self, ind, symbolic=False):
         if symbolic:
-            return self.state[ind] in {State.DONE, State.BAD_B} and self._obj_in_hand != f"brick_{ind}"
+            return (
+                self.state[ind] in {State.DONE, State.BAD_B} and self._obj_in_hand != f"brick_{ind}"
+            )
         body_name = f"brick_{ind}"
         return self.env.get_body_pos(body_name)[1] > 0 and not self.env.object_is_in_hand(body_name)
 
@@ -473,7 +592,7 @@ class AssemblyOracle(object):
             if self._has_successor_in_board(v, symbolic=symbolic):
                 return True
         return False
-    
+
     def _has_direct_successor_in_board(self, ind, symbolic=False):
         for v in self.to_neighbors[ind]:
             if self._check_obj_inboard(v, symbolic=symbolic):
@@ -498,7 +617,9 @@ class AssemblyOracle(object):
             for v in self.to_neighbors[ind]:
                 self.in_deg[v] -= 1
                 if self.in_deg[v] == 0:
-                    if self.state[v] == State.BLOCKED_P and self._all_predecessors_done(v, symbolic=symbolic):
+                    if self.state[v] == State.BLOCKED_P and self._all_predecessors_done(
+                        v, symbolic=symbolic
+                    ):
                         self.state[v] = State.READY
         elif old_state == State.DONE:
             for v in self.to_neighbors[ind]:
@@ -535,14 +656,14 @@ class AssemblyOracle(object):
                     if self.state[ind] in {State.READY, State.BAD_D}:
                         return f"pick up the {self.brick_descriptions[i]}"
             elif self.global_state == State.BAD_B:
-                for (ind, desc) in zip(reversed(self.brick_ids), reversed(self.brick_descriptions)):
+                for ind, desc in zip(reversed(self.brick_ids), reversed(self.brick_descriptions)):
                     if self.state[ind] == State.BAD_B:
                         return f"pick up the {desc}"
             elif self.global_state == State.DONE:
                 return "done"
             # should not reach here
             raise RuntimeError(f"Bad global status: {self.state2name(self.global_state)}")
-    
+
     def get_all_feasible_actions(self):
         if self._obj_in_hand is not None:
             obj_id = int(self._obj_in_hand.split("_")[-1])
@@ -560,14 +681,16 @@ class AssemblyOracle(object):
         else:
             if self.global_state == State.READY:
                 return [
-                    f"pick up the {self.brick_descriptions[i]}" 
-                    for i, ind in enumerate(self.brick_ids) 
+                    f"pick up the {self.brick_descriptions[i]}"
+                    for i, ind in enumerate(self.brick_ids)
                     if self.state[ind] in {State.READY, State.BAD_D}
                 ]
             elif self.global_state == State.BAD_B:
                 actions = []
-                for (ind, desc) in zip(reversed(self.brick_ids), reversed(self.brick_descriptions)):
-                    if self.state[ind] == State.BAD_B and not self._has_direct_successor_in_board(ind):
+                for ind, desc in zip(reversed(self.brick_ids), reversed(self.brick_descriptions)):
+                    if self.state[ind] == State.BAD_B and not self._has_direct_successor_in_board(
+                        ind
+                    ):
                         actions.append(f"pick up the {desc}")
                 return actions
             elif self.global_state == State.DONE:
@@ -614,7 +737,9 @@ class AssemblyOracle(object):
                             self._obj_in_hand = f"brick_{ind}"
                             break
                 elif self.global_state == State.BAD_B:
-                    for (ind, desc) in zip(reversed(self.brick_ids), reversed(self.brick_descriptions)):
+                    for ind, desc in zip(
+                        reversed(self.brick_ids), reversed(self.brick_descriptions)
+                    ):
                         if self.state[ind] == State.BAD_B:
                             actions.append(f"pick up the {desc}")
                             self._obj_in_hand = f"brick_{ind}"
@@ -644,7 +769,7 @@ class AssemblyOracle(object):
         for k, v in self.state.items():
             if v == State.BAD_B:
                 return State.BAD_B
-            done_cnt += (v == State.DONE)
+            done_cnt += v == State.DONE
         if done_cnt == len(self.brick_ids):
             return State.DONE
         return State.READY
@@ -653,16 +778,13 @@ class AssemblyOracle(object):
     def global_state_value(self):
         done_cnt = 0
         for k, v in self.state.items():
-            done_cnt += (v == State.DONE)
+            done_cnt += v == State.DONE
         return done_cnt / len(self.brick_ids)
 
     def get_oracle_state(self):
-        state = {
-            'state': self.state.copy(),
-            'in_deg': self.in_deg.copy()
-        }
+        state = {"state": self.state.copy(), "in_deg": self.in_deg.copy()}
         return state
 
     def set_oracle_state(self, state):
-        self.state = state['state'].copy()
-        self.in_deg = state['in_deg'].copy()
+        self.state = state["state"].copy()
+        self.in_deg = state["in_deg"].copy()

@@ -757,6 +757,36 @@ class QwenVLM(BaseVLM):
 
 
 # ============================================================================
+# Kimi (Moonshot AI) Implementation
+# ============================================================================
+
+
+class KimiVLM(OpenAIVLM):
+    """
+    Kimi (Moonshot AI) Vision models.
+
+    Compatible with OpenAI API.
+    API Key: MOONSHOT_API_KEY environment variable
+    Base URL: https://api.moonshot.cn/v1
+    """
+
+    def __init__(
+        self,
+        model: str = "moonshot-v1-8k-vision-preview",
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = "https://api.moonshot.cn/v1",
+        **kwargs,
+    ):
+        api_key = api_key or os.environ.get("MOONSHOT_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "Moonshot API key required. Set MOONSHOT_API_KEY env var or pass api_key."
+            )
+        
+        super().__init__(model=model, api_key=api_key, base_url=base_url, **kwargs)
+
+
+# ============================================================================
 # Unified VLM Factory
 # ============================================================================
 
@@ -771,6 +801,7 @@ class UnifiedVLM:
         vlm = UnifiedVLM(provider="openai", model="gpt-5.1")
         vlm = UnifiedVLM(provider="gemini", model="gemini-3-pro-preview")
         vlm = UnifiedVLM(provider="qwen", model="qwen3-vl-235b-a22b-instruct")
+        vlm = UnifiedVLM(provider="kimi", model="moonshot-v1-8k-vision-preview")
     """
 
     PROVIDERS = {
@@ -781,6 +812,8 @@ class UnifiedVLM:
         "qwen": QwenVLM,
         "alibaba": QwenVLM,
         "dashscope": QwenVLM,
+        "kimi": KimiVLM,
+        "moonshot": KimiVLM,
     }
 
     # Default models for each provider
@@ -792,6 +825,8 @@ class UnifiedVLM:
         "qwen": "qwen3-vl-235b-a22b-instruct",
         "alibaba": "qwen3-vl-235b-a22b-instruct",
         "dashscope": "qwen3-vl-235b-a22b-instruct",
+        "kimi": "moonshot-v1-8k-vision-preview",
+        "moonshot": "moonshot-v1-8k-vision-preview",
     }
 
     def __init__(
@@ -844,7 +879,7 @@ def create_vlm(
     Create a VLM instance.
 
     Args:
-        provider: "openai", "gemini", or "qwen"
+        provider: "openai", "gemini", "qwen", or "kimi"
         model: Model name (uses default if not specified)
         **kwargs: Additional arguments (api_key, base_url, etc.)
 
@@ -878,6 +913,11 @@ def get_available_models() -> Dict[str, List[str]]:
             "qwen2-vl-72b-instruct",
             "qwen-vl-max",
             "qwen-vl-plus",
+        ],
+        "kimi": [
+            "moonshot-v1-8k-vision-preview",
+            "moonshot-v1-32k-vision-preview",
+            "moonshot-v1-128k-vision-preview",
         ],
     }
 

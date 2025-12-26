@@ -64,6 +64,29 @@ except ImportError:
 # =========================================================================
 
 
+def _get_signature_for_color(env, color: str) -> str:
+    """Helper to get shape signature for a color from env."""
+    if hasattr(env, "get_signature_for_color"):
+        return env.get_signature_for_color(color)
+    elif hasattr(env, "color_signature_map"):
+        return env.color_signature_map.get(color, f"unknown_{color}")
+    return f"unknown_{color}"
+
+
+def _get_shape_features_for_color(env, color: str) -> Dict[str, Any]:
+    """Helper to get shape features for a color from env."""
+    if hasattr(env, "get_shape_features"):
+        return env.get_shape_features(color)
+    return {}
+
+
+def _get_piece_dependencies(env, color: str) -> Dict[str, Any]:
+    """Helper to get dependency info for a piece."""
+    if hasattr(env, "get_piece_dependencies"):
+        return env.get_piece_dependencies(color)
+    return {"blocks": [], "blocked_by": [], "blocks_colors": [], "blocked_by_colors": []}
+
+
 def extract_symbolic_state(
     env,
     proposed_action: str,
@@ -79,6 +102,11 @@ def extract_symbolic_state(
     - What action type is being attempted
     - Recent failure context
 
+    NEW: Also includes shape-based information that transfers across episodes:
+    - Shape signatures (color-independent identifiers)
+    - Shape features (dimensions, slots, holes)
+    - Dependency information (which pieces block which)
+
     Args:
         env: FrankaAssemblyEnv instance
         proposed_action: The action being considered (e.g., "insert red")
@@ -86,7 +114,7 @@ def extract_symbolic_state(
         last_fail_tag: Failure tag from previous action (if any)
 
     Returns:
-        Dict with symbolic state fields
+        Dict with symbolic state fields (both color-based and shape-based)
     """
     # Parse action type from proposed action
     action_type = "unknown"
@@ -119,6 +147,8 @@ def extract_symbolic_state(
     # Get holding state
     is_holding = False
     holding_piece = None
+    holding_signature = None
+    holding_shape_features = {}
     try:
         body = env.get_object_in_hand() if hasattr(env, "get_object_in_hand") else None
         if body is not None:
@@ -129,6 +159,9 @@ def extract_symbolic_state(
             try:
                 idx = names.index(body)
                 holding_piece = str(colors[idx])
+                # NEW: Get shape signature for held piece
+                holding_signature = _get_signature_for_color(env, holding_piece)
+                holding_shape_features = _get_shape_features_for_color(env, holding_piece)
             except (ValueError, IndexError):
                 holding_piece = body
     except Exception:
@@ -137,33 +170,82 @@ def extract_symbolic_state(
     # Get progress: which pieces are inserted
     inserted_pieces = []
     remaining_pieces = []
+    inserted_signatures = []
+    remaining_signatures = []
     try:
         colors = list(getattr(env, "peg_colors", []))
         names = list(getattr(env, "peg_names", []))
         for c, n in zip(colors, names):
             try:
+                sig = _get_signature_for_color(env, c)
                 if env.object_is_success(n):
                     inserted_pieces.append(str(c))
+                    inserted_signatures.append(sig)
                 else:
                     remaining_pieces.append(str(c))
+                    remaining_signatures.append(sig)
             except Exception:
                 remaining_pieces.append(str(c))
+                remaining_signatures.append(f"unknown_{c}")
     except Exception:
         pass
 
     total_pieces = len(inserted_pieces) + len(remaining_pieces)
     progress = len(inserted_pieces) / total_pieces if total_pieces > 0 else 0.0
 
+    # NEW: Get target piece information
+    target_signature = None
+    target_shape_features = {}
+    target_dependencies = {
+        "blocks": [],
+        "blocked_by": [],
+        "blocks_colors": [],
+        "blocked_by_colors": [],
+    }
+    if target_color:
+        target_signature = _get_signature_for_color(env, target_color)
+        target_shape_features = _get_shape_features_for_color(env, target_color)
+        target_dependencies = _get_piece_dependencies(env, target_color)
+
+    # NEW: Check if target's dependencies are satisfied
+    dependencies_satisfied = True
+    unsatisfied_dependencies = []
+    if target_dependencies.get("blocked_by"):
+        for blocker_sig in target_dependencies["blocked_by"]:
+            if blocker_sig not in inserted_signatures:
+                dependencies_satisfied = False
+                unsatisfied_dependencies.append(blocker_sig)
+
     return {
+        # === ACTION INFO ===
         "action_type": action_type,
+        # === COLOR-BASED (for backward compatibility and visual grounding) ===
         "target_color": target_color,
+        "holding_piece": holding_piece,  # color of held piece
+        "inserted_pieces": inserted_pieces,  # colors
+        "remaining_pieces": remaining_pieces,  # colors
+        # === SHAPE-BASED (transferable across episodes) ===
+        "target_signature": target_signature,
+        "target_shape_features": target_shape_features,
+        "holding_signature": holding_signature,
+        "holding_shape_features": holding_shape_features,
+        "inserted_signatures": inserted_signatures,
+        "remaining_signatures": remaining_signatures,
+        # === DEPENDENCY INFO (the key to correct ordering!) ===
+        "target_blocks": target_dependencies.get("blocks", []),  # signatures this piece blocks
+        "target_blocked_by": target_dependencies.get(
+            "blocked_by", []
+        ),  # signatures that block this
+        "target_blocks_colors": target_dependencies.get("blocks_colors", []),
+        "target_blocked_by_colors": target_dependencies.get("blocked_by_colors", []),
+        "dependencies_satisfied": dependencies_satisfied,
+        "unsatisfied_dependencies": unsatisfied_dependencies,
+        # === PROGRESS ===
         "is_holding": is_holding,
-        "holding_piece": holding_piece,
         "progress": progress,
         "num_remaining": len(remaining_pieces),
         "num_inserted": len(inserted_pieces),
-        "inserted_pieces": inserted_pieces,
-        "remaining_pieces": remaining_pieces,
+        # === FAILURE CONTEXT ===
         "last_action_success": last_action_success,
         "last_fail_tag": last_fail_tag,
     }
@@ -174,6 +256,7 @@ def symbolic_state_matches(
     stored: Dict[str, Any],
     strict_action_type: bool = True,
     strict_holding: bool = True,
+    use_shape_matching: bool = True,
 ) -> bool:
     """
     Check if two symbolic states are compatible for retrieval.
@@ -183,6 +266,7 @@ def symbolic_state_matches(
         stored: The stored experience's symbolic state
         strict_action_type: Require exact action type match
         strict_holding: Require exact holding state match
+        use_shape_matching: Use shape signatures instead of colors (recommended)
 
     Returns:
         True if states are compatible
@@ -206,7 +290,123 @@ def symbolic_state_matches(
     if abs(q_remaining - s_remaining) > 2:
         return False
 
+    # NEW: Shape-based matching (transfers across episodes!)
+    if use_shape_matching:
+        # Match by target shape signature if available
+        q_target_sig = query.get("target_signature")
+        s_target_sig = stored.get("target_signature")
+
+        if q_target_sig and s_target_sig:
+            # Extract shape category from signature (e.g., "block_25x4x8_elongated" -> "elongated")
+            q_aspect = _extract_aspect_from_signature(q_target_sig)
+            s_aspect = _extract_aspect_from_signature(s_target_sig)
+
+            # Match on aspect ratio (elongated, tall, square, etc.)
+            if q_aspect and s_aspect and q_aspect != s_aspect:
+                return False
+
+        # Match on holding shape signature if holding
+        if query.get("is_holding") and stored.get("is_holding"):
+            q_hold_sig = query.get("holding_signature")
+            s_hold_sig = stored.get("holding_signature")
+
+            if q_hold_sig and s_hold_sig:
+                q_hold_aspect = _extract_aspect_from_signature(q_hold_sig)
+                s_hold_aspect = _extract_aspect_from_signature(s_hold_sig)
+
+                if q_hold_aspect and s_hold_aspect and q_hold_aspect != s_hold_aspect:
+                    return False
+
+        # Match on dependency satisfaction status
+        q_deps_sat = query.get("dependencies_satisfied")
+        s_deps_sat = stored.get("dependencies_satisfied")
+
+        if q_deps_sat is not None and s_deps_sat is not None:
+            if q_deps_sat != s_deps_sat:
+                return False
+
     return True
+
+
+def _extract_aspect_from_signature(signature: str) -> Optional[str]:
+    """Extract aspect ratio from shape signature."""
+    if not signature:
+        return None
+
+    aspects = ["elongated", "tall", "square", "flat", "rectangular"]
+    for aspect in aspects:
+        if aspect in signature:
+            return aspect
+    return None
+
+
+def symbolic_state_similarity(
+    query: Dict[str, Any],
+    stored: Dict[str, Any],
+) -> float:
+    """
+    Compute similarity score between two symbolic states.
+
+    Returns a score from 0.0 to 1.0 where higher is more similar.
+    This is useful for ranking when multiple experiences match.
+    """
+    if stored is None:
+        return 0.0
+
+    score = 0.0
+    max_score = 0.0
+
+    # Action type match (weight: 3)
+    max_score += 3.0
+    if query.get("action_type") == stored.get("action_type"):
+        score += 3.0
+
+    # Holding state match (weight: 2)
+    max_score += 2.0
+    if query.get("is_holding") == stored.get("is_holding"):
+        score += 2.0
+
+    # Progress similarity (weight: 2)
+    max_score += 2.0
+    q_remaining = query.get("num_remaining", 0)
+    s_remaining = stored.get("num_remaining", 0)
+    progress_diff = abs(q_remaining - s_remaining)
+    if progress_diff == 0:
+        score += 2.0
+    elif progress_diff == 1:
+        score += 1.5
+    elif progress_diff == 2:
+        score += 1.0
+
+    # Shape signature match (weight: 3) - THE KEY FOR TRANSFER!
+    max_score += 3.0
+    q_target_sig = query.get("target_signature", "")
+    s_target_sig = stored.get("target_signature", "")
+
+    if q_target_sig and s_target_sig:
+        # Full signature match
+        if q_target_sig == s_target_sig:
+            score += 3.0
+        else:
+            # Partial match (same aspect ratio)
+            q_aspect = _extract_aspect_from_signature(q_target_sig)
+            s_aspect = _extract_aspect_from_signature(s_target_sig)
+            if q_aspect and s_aspect and q_aspect == s_aspect:
+                score += 1.5
+
+    # Dependency satisfaction match (weight: 2)
+    max_score += 2.0
+    if query.get("dependencies_satisfied") == stored.get("dependencies_satisfied"):
+        score += 2.0
+
+    # Holding signature match (weight: 1)
+    max_score += 1.0
+    q_hold_sig = query.get("holding_signature", "")
+    s_hold_sig = stored.get("holding_signature", "")
+    if q_hold_sig and s_hold_sig and q_hold_sig == s_hold_sig:
+        score += 1.0
+
+    return score / max_score if max_score > 0 else 0.0
 
 
 def extract_env_state_vec(env) -> np.ndarray:

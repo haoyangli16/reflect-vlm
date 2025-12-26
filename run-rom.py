@@ -303,6 +303,12 @@ def build_env(env_seed, xml_filename, render_mode="offscreen"):
     peg_labels_shuffled = peg_labels.copy()
     random.shuffle(peg_labels_shuffled)
 
+    # Extract shape information from info dict (if available)
+    brick_shapes = info.get("brick_shapes", {})
+    color_to_signature = info.get("color_to_signature", {})
+    signature_to_color = info.get("signature_to_color", {})
+    dependency_signatures = info.get("dependency_signatures", [])
+
     env = FrankaAssemblyEnv(
         board_name=board_name,
         fixture_name=fixture_name,
@@ -313,12 +319,22 @@ def build_env(env_seed, xml_filename, render_mode="offscreen"):
         model_name=xml_filename,
         max_episode_length=50000,
         magic_attaching=True,
+        # NEW: Pass shape information
+        brick_shapes=brick_shapes,
+        color_to_signature=color_to_signature,
+        signature_to_color=signature_to_color,
+        dependency_signatures=dependency_signatures,
     )
     env_info = {
         "peg_ids": peg_ids,
         "peg_names": peg_names,
         "peg_descriptions": peg_descriptions,
         "peg_labels": peg_labels,
+        # NEW: Include shape info
+        "brick_shapes": brick_shapes,
+        "color_to_signature": color_to_signature,
+        "signature_to_color": signature_to_color,
+        "dependency_signatures": dependency_signatures,
         "peg_labels_shuffled": peg_labels_shuffled,
         "dependencies": info["dependencies"],
     }
