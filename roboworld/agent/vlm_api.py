@@ -782,7 +782,7 @@ class KimiVLM(OpenAIVLM):
             raise ValueError(
                 "Moonshot API key required. Set MOONSHOT_API_KEY env var or pass api_key."
             )
-        
+
         super().__init__(model=model, api_key=api_key, base_url=base_url, **kwargs)
 
 
@@ -925,6 +925,10 @@ def get_available_models() -> Dict[str, List[str]]:
 # ============================================================================
 # Test function
 # ============================================================================
+
+
+# Convenience export for checking available providers
+SUPPORTED_PROVIDERS = list(UnifiedVLM.PROVIDERS.keys())
 
 
 def test_vlm(provider: str = "openai", model: Optional[str] = None):
