@@ -279,6 +279,90 @@ class DebugLogger:
         summary_file = self.save_dir / "episode_summaries.jsonl"
         self._write(summary_file, summary)
 
+    def save_hypotheses_snapshot(
+        self,
+        learning_loop,
+        episode: int,
+    ):
+        """Save current hypotheses to a JSON file for inspection."""
+        if not self.enabled or not learning_loop:
+            return
+
+        hypotheses = learning_loop.hypothesis_store.hypotheses
+        snapshot = {
+            "timestamp": datetime.now().isoformat(),
+            "episode": episode,
+            "total": len(hypotheses),
+            "hypotheses": [],
+        }
+
+        for h in hypotheses:
+            snapshot["hypotheses"].append(
+                {
+                    "hid": h.hid,
+                    "statement": h.statement,
+                    "type": str(h.hypothesis_type),
+                    "status": str(h.status),
+                    "confidence": h.confidence,
+                    "supporting_episodes": getattr(h, "supporting_episodes", []),
+                    "contradicting_episodes": getattr(h, "contradicting_episodes", []),
+                    "created_at": getattr(h, "created_at", ""),
+                }
+            )
+
+        # Write to snapshot file
+        snapshot_file = self.save_dir / f"hypotheses_ep{episode}.json"
+        with open(snapshot_file, "w") as f:
+            json.dump(snapshot, f, indent=2)
+
+        # Also update the "latest" file
+        latest_file = self.save_dir / "hypotheses_latest.json"
+        with open(latest_file, "w") as f:
+            json.dump(snapshot, f, indent=2)
+
+    def save_principles_snapshot(
+        self,
+        learning_loop,
+        episode: int,
+    ):
+        """Save current principles to a JSON file for inspection."""
+        if not self.enabled or not learning_loop:
+            return
+
+        principles = learning_loop.principle_store.principles
+        snapshot = {
+            "timestamp": datetime.now().isoformat(),
+            "episode": episode,
+            "total": len(principles),
+            "principles": [],
+        }
+
+        for p in principles:
+            ptype = getattr(p, "principle_type", "GENERAL")
+            if hasattr(ptype, "name"):
+                ptype = ptype.name
+            snapshot["principles"].append(
+                {
+                    "pid": getattr(p, "pid", "unknown"),
+                    "content": p.content,
+                    "type": ptype,
+                    "confidence": p.confidence,
+                    "status": getattr(p, "status", "active"),
+                    "reinforcement_count": getattr(p, "reinforcement_count", 0),
+                    "prediction_errors": getattr(p, "prediction_errors", 0),
+                }
+            )
+
+        # Write to snapshot file
+        snapshot_file = self.save_dir / f"principles_ep{episode}.json"
+        with open(snapshot_file, "w") as f:
+            json.dump(snapshot, f, indent=2)
+
+        # Also update the "latest" file
+        latest_file = self.save_dir / "principles_latest.json"
+        with open(latest_file, "w") as f:
+            json.dump(snapshot, f, indent=2)
+
     def display_working_memory(
         self,
         learning_loop,
@@ -291,6 +375,10 @@ class DebugLogger:
         """
         if not self.enabled or not learning_loop:
             return
+
+        # Save snapshots to files
+        self.save_hypotheses_snapshot(learning_loop, episode)
+        self.save_principles_snapshot(learning_loop, episode)
 
         stats = learning_loop.get_stats()
 
@@ -1219,12 +1307,20 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
         for r in results:
             f.write(json.dumps(r) + "\n")
 
+    # Save final hypothesis/principle snapshots
+    if debug_logger and learning_loop:
+        debug_logger.save_hypotheses_snapshot(learning_loop, config.n_episodes)
+        debug_logger.save_principles_snapshot(learning_loop, config.n_episodes)
+        debug_logger.display_working_memory(learning_loop, config.n_episodes)
+
     # Print summary
     print("\n" + "=" * 60)
     print("EXPERIMENT COMPLETE")
     print("=" * 60)
     print(f"Success Rate: {success_rate:.1%} ({successes}/{config.n_episodes})")
     print(f"Results saved to: {save_dir}")
+    print(f"Hypotheses: {save_dir}/hypotheses_latest.json")
+    print(f"Principles: {save_dir}/principles_latest.json")
     print("=" * 60)
 
     return summary
