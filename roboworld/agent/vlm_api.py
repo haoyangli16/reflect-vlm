@@ -892,32 +892,23 @@ def create_vlm(
 def get_available_models() -> Dict[str, List[str]]:
     """Get list of recommended models for each provider."""
     return {
-        "openai": [
-            "gpt-5.1",
-            "gpt-4.1",
-            "gpt-4o",
-            "gpt-4o-mini",
-            "gpt-4-turbo",
-        ],
+        "openai": ["gpt-5.2", "gpt-5.1", "o4-mini-2025-04-16"],
         "gemini": [
             "gemini-3-pro-preview",
-            "gemini-2.5-pro-preview-06-05",
-            "gemini-2.0-flash",
-            "gemini-2.0-flash-thinking-exp",
-            "gemini-1.5-pro",
+            "gemini-3-flash-preview",
+            "gemini-2.5-pro",
         ],
         "qwen": [
             "qwen3-vl-235b-a22b-instruct",
             "qwen3-vl-72b-instruct",
             "qwen2.5-vl-72b-instruct",
-            "qwen2-vl-72b-instruct",
-            "qwen-vl-max",
-            "qwen-vl-plus",
         ],
         "kimi": [
-            "moonshot-v1-8k-vision-preview",
-            "moonshot-v1-32k-vision-preview",
-            "moonshot-v1-128k-vision-preview",
+            "kimi-k2-0905-preview",
+            "kimi-k2-0711-preview",
+            "kimi-k2-turbo-preview",
+            "kimi-k2-thinking",
+            "kimi-k2-thinking-turbo",
         ],
     }
 
