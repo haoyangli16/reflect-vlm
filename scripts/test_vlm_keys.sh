@@ -9,16 +9,16 @@
 # ============================================================================
 
 # --- OpenAI (GPT-4o, GPT-5.1) ---
-export OPENAI_API_KEY=""
+# export OPENAI_API_KEY="your_openai_key_here"
 
-# --- Google Gemini (Gemini 1.5 Pro, Gemini 2.0 Flash) ---
-export GOOGLE_API_KEY=""
+# # --- Google Gemini (Gemini 1.5 Pro, Gemini 2.0 Flash) ---
+# export GOOGLE_API_KEY="your_google_key_here"
 
-# --- Alibaba Qwen (DashScope) ---
-export DASHSCOPE_API_KEY=""
+# # --- Alibaba Qwen (DashScope) ---
+# export DASHSCOPE_API_KEY="your_dashscope_key_here"
 
-# --- Moonshot AI (Kimi) ---
-export MOONSHOT_API_KEY=""
+# # --- Moonshot AI (Kimi) ---
+# export MOONSHOT_API_KEY="your_moonshot_key_here"
 
 
 # ============================================================================
@@ -50,9 +50,14 @@ run_test() {
 # Run tests for each provider
 # The python script itself handles missing keys by catching the error and printing it.
 
-run_test "openai"
-run_test "gemini"
-run_test "qwen"
-run_test "kimi"
+# Uncomment to test OpenAI (requires OPENAI_API_KEY)
+# run_test "openai"
+# run_test "gemini"
+# run_test "qwen"
+# run_test "kimi"
+run_test "huggingface"
+
+# Uncomment to test HuggingFace (requires HF_TOKEN)
+# run_test "huggingface"
 
 echo "All tests completed."

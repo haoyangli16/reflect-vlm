@@ -614,35 +614,26 @@ class QwenVLM(BaseVLM):
     """
     Alibaba Qwen Vision-Language models (Qwen3-VL, Qwen2-VL, etc.)
 
-    Supports multiple backends:
-    - DashScope API (official Alibaba Cloud)
-    - OpenAI-compatible API (vLLM, etc.)
-    - Local transformers
+    Uses OpenAI-compatible API with DashScope endpoint.
+    Reference: https://github.com/QwenLM/Qwen
 
     API Key: DASHSCOPE_API_KEY or QWEN_API_KEY environment variable
+    Base URL: https://dashscope.aliyuncs.com/compatible-mode/v1
     """
+
+    # DashScope OpenAI-compatible endpoint
+    DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
     def __init__(
         self,
         model: str = "qwen3-vl-235b-a22b-instruct",
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
-        backend: str = "dashscope",  # "dashscope", "openai_compatible", "local"
         **kwargs,
     ):
         super().__init__(model, api_key, **kwargs)
-        self.backend = backend
-        self.base_url = base_url
 
-        if backend == "dashscope":
-            self._init_dashscope(api_key)
-        elif backend == "openai_compatible":
-            self._init_openai_compatible(api_key, base_url)
-        else:
-            raise ValueError(f"Unknown backend: {backend}")
-
-    def _init_dashscope(self, api_key: Optional[str]):
-        """Initialize DashScope API client."""
+        # Get API key from environment
         self.api_key = (
             api_key or os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("QWEN_API_KEY")
         )
@@ -651,27 +642,8 @@ class QwenVLM(BaseVLM):
                 "DashScope API key required. Set DASHSCOPE_API_KEY or QWEN_API_KEY env var."
             )
 
-        # Validate API key format (DashScope keys typically start with 'sk-')
-        if not (self.api_key.startswith("sk-") or len(self.api_key) > 20):
-            print(
-                f"[Qwen] Warning: API key format may be incorrect. "
-                f"DashScope keys typically start with 'sk-' and are longer than 20 characters."
-            )
-
-        try:
-            import dashscope
-            from dashscope import MultiModalConversation
-
-            dashscope.api_key = self.api_key
-            self._dashscope = dashscope
-            self._mmc = MultiModalConversation
-        except ImportError:
-            raise ImportError("dashscope package required. Install with: pip install dashscope")
-
-    def _init_openai_compatible(self, api_key: Optional[str], base_url: Optional[str]):
-        """Initialize OpenAI-compatible API client (e.g., vLLM)."""
-        self.api_key = api_key or os.environ.get("QWEN_API_KEY", "dummy")
-        self.base_url = base_url or os.environ.get("QWEN_BASE_URL", "http://localhost:8000/v1")
+        # Use DashScope OpenAI-compatible endpoint by default
+        self.base_url = base_url or self.DASHSCOPE_BASE_URL
 
         try:
             from openai import OpenAI
@@ -688,105 +660,18 @@ class QwenVLM(BaseVLM):
         max_tokens: int = 1024,
         temperature: float = 0.7,
     ) -> str:
-        if self.backend == "dashscope":
-            return self._generate_dashscope(prompt, images, system_prompt, max_tokens, temperature)
-        elif self.backend == "openai_compatible":
-            return self._generate_openai_compatible(
-                prompt, images, system_prompt, max_tokens, temperature
-            )
-        return ""
+        """
+        Generate text using OpenAI-compatible DashScope API.
 
-    def _generate_dashscope(
-        self,
-        prompt: str,
-        images: Optional[List[Any]],
-        system_prompt: Optional[str],
-        max_tokens: int,
-        temperature: float,
-    ) -> str:
-        """Generate using DashScope API."""
-        messages = []
-
-        # System message (DashScope format)
-        if system_prompt:
-            messages.append({"role": "system", "content": [{"text": system_prompt}]})
-
-        # User message with images
-        user_content = []
-
-        if images:
-            for img in images:
-                if img is not None:
-                    img_b64 = prepare_image(img)
-                    user_content.append({"image": f"data:image/png;base64,{img_b64}"})
-
-        user_content.append({"text": prompt})
-        messages.append({"role": "user", "content": user_content})
-
-        try:
-            response = self._mmc.call(
-                model=self.model,
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
-
-            # Check response status
-            if response.status_code == 200:
-                # Extract text from response
-                if hasattr(response, "output") and response.output:
-                    if hasattr(response.output, "choices") and response.output.choices:
-                        message = response.output.choices[0].message
-                        if hasattr(message, "content") and message.content:
-                            # content is a list of dicts with "text" or "image" keys
-                            text_parts = [
-                                item.get("text", "")
-                                for item in message.content
-                                if isinstance(item, dict) and "text" in item
-                            ]
-                            if text_parts:
-                                return " ".join(text_parts).strip()
-                            # Fallback: try direct access
-                            if isinstance(message.content, list) and len(message.content) > 0:
-                                if isinstance(message.content[0], dict):
-                                    return message.content[0].get("text", "").strip()
-                                elif isinstance(message.content[0], str):
-                                    return message.content[0].strip()
-                            elif isinstance(message.content, str):
-                                return message.content.strip()
-                print(f"[Qwen] Unexpected response format: {response}")
-                return ""
-            else:
-                # Better error reporting
-                error_msg = getattr(response, "message", "Unknown error")
-                error_code = getattr(response, "code", "Unknown")
-                print(f"[Qwen] API error: {error_code} - {error_msg}")
-                if hasattr(response, "request_id"):
-                    print(f"[Qwen] Request ID: {response.request_id}")
-                return ""
-        except Exception as e:
-            import traceback
-
-            print(f"[Qwen] API error: {e}")
-            print(f"[Qwen] Error type: {type(e).__name__}")
-            # Print traceback for debugging
-            traceback.print_exc()
-            return ""
-
-    def _generate_openai_compatible(
-        self,
-        prompt: str,
-        images: Optional[List[Any]],
-        system_prompt: Optional[str],
-        max_tokens: int,
-        temperature: float,
-    ) -> str:
-        """Generate using OpenAI-compatible API."""
+        Uses the same format as OpenAI API with image_url type.
+        Reference: https://github.com/QwenLM/Qwen
+        """
         messages = []
 
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
 
+        # Build user content with images (OpenAI format)
         user_content = []
 
         if images:
@@ -827,7 +712,9 @@ class KimiVLM(OpenAIVLM):
 
     Compatible with OpenAI API.
     API Key: MOONSHOT_API_KEY or KIMI_API_KEY environment variable
-    Base URL: https://api.moonshot.cn/v1 (default)
+    Base URL: https://api.moonshot.ai/v1 (NOTE: .ai not .cn!)
+
+    Reference: https://platform.moonshot.ai/docs/api/chat
     """
 
     def __init__(
@@ -844,9 +731,50 @@ class KimiVLM(OpenAIVLM):
                 "Moonshot/Kimi API key required. Set MOONSHOT_API_KEY or KIMI_API_KEY env var or pass api_key."
             )
 
-        # Default base URL for Moonshot API
+        # IMPORTANT: Default base URL for Moonshot API is .ai NOT .cn!
+        # See: https://platform.moonshot.ai/docs/api/chat
         if base_url is None:
-            base_url = "https://api.moonshot.cn/v1"
+            base_url = "https://api.moonshot.ai/v1"
+
+        super().__init__(model=model, api_key=api_key, base_url=base_url, **kwargs)
+
+
+# ============================================================================
+# HuggingFace Router Implementation (for gpt-oss-120b etc.)
+# ============================================================================
+
+
+class HuggingFaceVLM(OpenAIVLM):
+    """
+    HuggingFace Router for open-source models like gpt-oss-120b.
+
+    Uses the HuggingFace router API which is OpenAI-compatible.
+    API Key: HF_TOKEN environment variable
+    Base URL: https://router.huggingface.co/v1
+
+    Example models:
+        - openai/gpt-oss-120b:cerebras
+    """
+
+    HUGGINGFACE_BASE_URL = "https://router.huggingface.co/v1"
+
+    def __init__(
+        self,
+        model: str = "openai/gpt-oss-120b:cerebras",
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        **kwargs,
+    ):
+        # Get API key from environment
+        api_key = api_key or os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "HuggingFace API key required. Set HF_TOKEN or HUGGINGFACE_API_KEY env var."
+            )
+
+        # Use HuggingFace router endpoint
+        if base_url is None:
+            base_url = self.HUGGINGFACE_BASE_URL
 
         super().__init__(model=model, api_key=api_key, base_url=base_url, **kwargs)
 
@@ -879,6 +807,8 @@ class UnifiedVLM:
         "dashscope": QwenVLM,
         "kimi": KimiVLM,
         "moonshot": KimiVLM,
+        "huggingface": HuggingFaceVLM,
+        "hf": HuggingFaceVLM,
     }
 
     # Default models for each provider
@@ -887,11 +817,14 @@ class UnifiedVLM:
         "gpt": "gpt-5.1",
         "gemini": "gemini-3-flash-preview",
         "google": "gemini-3-flash-preview",
-        "qwen": "qwen3-vl-72b-instruct",
-        "alibaba": "qwen3-vl-72b-instruct",
-        "dashscope": "qwen3-vl-72b-instruct",
+        # Use the model that works in your test file
+        "qwen": "qwen3-vl-235b-a22b-instruct",
+        "alibaba": "qwen3-vl-235b-a22b-instruct",
+        "dashscope": "qwen3-vl-235b-a22b-instruct",
         "kimi": "kimi-k2-0905-preview",
         "moonshot": "kimi-k2-0905-preview",
+        "huggingface": "openai/gpt-oss-120b:cerebras",
+        "hf": "openai/gpt-oss-120b:cerebras",
     }
 
     def __init__(
@@ -974,6 +907,9 @@ def get_available_models() -> Dict[str, List[str]]:
             "kimi-k2-turbo-preview",
             "kimi-k2-thinking",
             "kimi-k2-thinking-turbo",
+        ],
+        "huggingface": [
+            "openai/gpt-oss-120b:cerebras",
         ],
     }
 
