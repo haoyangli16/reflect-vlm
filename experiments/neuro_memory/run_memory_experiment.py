@@ -1355,6 +1355,7 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
 
             # Close environment and cleanup XML file
             env.close()
+            runner.oracle = None
             xml_file = info.get("_xml_filename")
             if xml_file and os.path.exists(xml_file):
                 try:
@@ -1419,6 +1420,8 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
     print(f"Hypotheses: {save_dir}/hypotheses_latest.json")
     print(f"Principles: {save_dir}/principles_latest.json")
     print("=" * 60)
+
+    env.close()
 
     return summary
 
