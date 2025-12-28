@@ -1,6 +1,6 @@
 <?xml version="1.0" ?>
 <mujoco>
-  <!--Automatically generated @ 00:55:19, 12/28/2025.-->
+  <!--Automatically generated @ 01:32:20, 12/28/2025.-->
   <compiler angle="radian" meshdir="." autolimits="true"/>
   <include file="franka/panda.xml"/>
   <include file="scene.xml"/>

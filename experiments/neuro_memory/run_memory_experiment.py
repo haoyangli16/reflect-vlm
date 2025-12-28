@@ -27,10 +27,12 @@ from __future__ import annotations
 import roboworld.fix_triton_import
 
 import argparse
+import io
 import json
 import os
 import sys
 import time
+from contextlib import redirect_stdout
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -76,6 +78,76 @@ except ImportError as e:
     print(f"ERROR: Failed to import romemo modules: {e}")
     print("Make sure worldmemory is installed: pip install -e /path/to/worldmemory")
     sys.exit(1)
+
+
+# ============================================================================
+# IK Failure Detection
+# ============================================================================
+
+
+class IKFailureError(Exception):
+    """
+    Exception raised when IK (Inverse Kinematics) failure is detected.
+
+    This happens when the robot cannot reach a target pose within the
+    maximum allowed steps. The environment prints "Max steps exceeded for `goto`"
+    or similar messages when this occurs.
+    """
+    pass
+
+
+# Patterns that indicate IK failure (robot cannot reach target pose)
+IK_FAILURE_PATTERNS = [
+    "Max steps exceeded for `goto`",
+    "Max steps exceeded for aligning",
+]
+
+
+def execute_action_with_ik_check(env, action: str) -> Tuple[int, bool]:
+    """
+    Execute an action and check for IK failures.
+
+    Args:
+        env: The FrankaAssemblyEnv environment
+        action: The action text to execute (e.g., "pick up red")
+
+    Returns:
+        Tuple of (error_code, ik_failure_detected)
+        - error_code: The error code from env.act_txt (0 = success)
+        - ik_failure_detected: True if IK failure was detected
+    """
+    # Capture stdout to detect IK failure messages
+    captured_output = io.StringIO()
+
+    # We need to capture stdout while still allowing it to print
+    # So we use a Tee-like approach
+    original_stdout = sys.stdout
+
+    class TeeOutput:
+        def __init__(self, original, capture):
+            self.original = original
+            self.capture = capture
+
+        def write(self, text):
+            self.original.write(text)
+            self.capture.write(text)
+
+        def flush(self):
+            self.original.flush()
+            self.capture.flush()
+
+    sys.stdout = TeeOutput(original_stdout, captured_output)
+
+    try:
+        err = env.act_txt(action)
+    finally:
+        sys.stdout = original_stdout
+
+    # Check if any IK failure patterns were detected
+    output_text = captured_output.getvalue()
+    ik_failure = any(pattern in output_text for pattern in IK_FAILURE_PATTERNS)
+
+    return err, ik_failure
 
 
 # ============================================================================
@@ -868,8 +940,16 @@ class EpisodeRunner:
                 fail_tag = None if success else "incomplete"
                 action_history.append(action)
             else:
-                # Execute action using env.act_txt
-                err = env.act_txt(action)
+                # Execute action using env.act_txt with IK failure detection
+                err, ik_failure = execute_action_with_ik_check(env, action)
+
+                # If IK failure detected, raise exception to skip this episode
+                if ik_failure:
+                    raise IKFailureError(
+                        f"IK failure during '{action}' at step {step}. "
+                        f"This is an environment bug, not a policy error."
+                    )
+
                 action_fail = err != 0
                 action_success = err == 0
                 fail_tag = f"err_{err}" if err != 0 else None
@@ -1111,26 +1191,69 @@ class EpisodeRunner:
         """
         Build prompt with proper ordering for human-like reading.
 
-        CORRECT Order (Task → State → Memory → Reflex → Query):
+        CORRECT Order (Task → Actions → Strategy → State → Memory → Reflex → Query):
         1. TASK DESCRIPTION (base_prompt) - What the robot needs to do
-        2. CURRENT STATE - What you're holding (critical!)
-        3. LONG-TERM MEMORY - Principles (high confidence rules)
-        4. WORKING MEMORY - Hypotheses (testing)
-        5. REFLEX MEMORY - Recent errors (avoid repeating)
+        2. ACTION DEFINITIONS - Clear explanation of each action
+        3. STRATEGIC GUIDANCE - How to plan and decide
+        4. CURRENT STATE - What you're holding (critical!)
+        5. LONG-TERM MEMORY - Principles (high confidence rules)
+        6. WORKING MEMORY - Hypotheses (testing)
+        7. REFLEX MEMORY - Recent errors (avoid repeating)
         """
-        # Start with task description (the original base prompt)
-        # But we need to split it to insert state info at the right place
-
         sections = []
 
         # =====================================================================
         # 1. TASK DESCRIPTION FIRST (extracted from base_prompt)
         # =====================================================================
-        # The base_prompt contains the full task description
         sections.append(base_prompt)
 
         # =====================================================================
-        # 2. CURRENT STATE (CRITICAL - prevents invalid actions!)
+        # 2. ACTION DEFINITIONS - Clear explanation of each action
+        # =====================================================================
+        action_defs = [
+            "",
+            "---",
+            "## 📋 ACTION DEFINITIONS",
+            "",
+            "**pick up [color]**: Pick up a brick. Can pick up bricks from the TABLE or bricks already INSERTED in the board.",
+            "",
+            "**put down [color]**: Put down the brick you're holding ONTO THE TABLE (not onto the board).",
+            "",
+            "**reorient [color]**: Rotate the brick you're holding to align with the board slot. WARNING: The resulting orientation may not be perfect - after reorienting, check if the brick can be correctly inserted. If not, you may need to reorient again.",
+            "",
+            "**insert [color]**: Insert the brick you're holding INTO THE BOARD. This will only succeed if: (1) you're holding the brick, (2) it's properly oriented, and (3) the target slot is not blocked by other bricks.",
+            "",
+            "**done**: Declare the task complete when the current state matches the goal state.",
+            "",
+        ]
+        sections.append("\n".join(action_defs))
+
+        # =====================================================================
+        # 3. STRATEGIC GUIDANCE - How to plan and decide
+        # =====================================================================
+        strategy_lines = [
+            "---",
+            "## 🎯 STRATEGIC PLANNING",
+            "",
+            "Before each action, think through these questions:",
+            "",
+            "1. **Check for blockers**: Are there bricks currently on the board that will BLOCK me from inserting the remaining bricks (on the table) to reach the goal state?",
+            "",
+            "2. **If blockers exist**: Which brick should I REMOVE FIRST? Pick it up from the board and put it down on the table.",
+            "",
+            "3. **If no blockers**: Which brick on the table should I INSERT FIRST to make progress toward the goal? Consider the assembly order - some bricks must be inserted before others.",
+            "",
+            "4. **Handle blocked insertions**: If you try to insert a brick but fail because another brick is blocking the slot, you must:",
+            "   - Put down the brick you're holding onto the table",
+            "   - Pick up the blocking brick from the board",
+            "   - Put down the blocking brick onto the table",
+            "   - Then decide your next move",
+            "",
+        ]
+        sections.append("\n".join(strategy_lines))
+
+        # =====================================================================
+        # 4. CURRENT STATE (CRITICAL - prevents invalid actions!)
         # =====================================================================
         if holding_object:
             state_lines = [
@@ -1158,7 +1281,7 @@ class EpisodeRunner:
             sections.append("\n".join(state_lines))
 
         # =====================================================================
-        # 3. LONG-TERM MEMORY: Verified Principles
+        # 5. LONG-TERM MEMORY: Verified Principles
         # =====================================================================
         if principles:
             principle_lines = ["## 🏆 LEARNED PRINCIPLES (Apply these!)"]
@@ -1173,7 +1296,7 @@ class EpisodeRunner:
             sections.append("\n".join(principle_lines))
 
         # =====================================================================
-        # 4. WORKING MEMORY: Active Hypotheses (under testing)
+        # 6. WORKING MEMORY: Active Hypotheses (under testing)
         # =====================================================================
         if hypotheses:
             hypo_lines = ["## 💡 HYPOTHESES (Consider but verify)"]
@@ -1188,7 +1311,7 @@ class EpisodeRunner:
             sections.append("\n".join(hypo_lines))
 
         # =====================================================================
-        # 5. REFLEX MEMORY: Recent Errors
+        # 7. REFLEX MEMORY: Recent Errors
         # =====================================================================
         if recent_errors:
             error_lines = ["## ⚠️ RECENT ERRORS (Avoid repeating!)"]
@@ -1352,16 +1475,22 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
     )
 
     # Run episodes
+    # We continue until we have n_episodes successful (non-IK-failure) episodes
     print("\n[3/4] Running episodes...")
     results = []
     successes = 0
+    completed_episodes = 0  # Episodes that ran without IK failure
+    ik_failures = 0  # Episodes skipped due to IK failure
+    skipped_seeds = []  # Seeds that had IK failures
 
-    for i in range(config.n_episodes):
-        seed = config.seed_start + i
+    seed_offset = 0  # Offset to get next seed when skipping
+
+    while completed_episodes < config.n_episodes:
+        seed = config.seed_start + completed_episodes + seed_offset
         episode_id = f"ep_{seed}"
 
-        if config.verbose and i % 10 == 0:
-            print(f"\n  Episode {i + 1}/{config.n_episodes} (seed={seed})")
+        if config.verbose and completed_episodes % 10 == 0:
+            print(f"\n  Episode {completed_episodes + 1}/{config.n_episodes} (seed={seed})")
 
         # =====================================================================
         # Display working memory periodically
@@ -1370,11 +1499,13 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
             config.show_working_memory
             and debug_logger
             and learning_loop
-            and i > 0
-            and i % config.working_memory_interval == 0
+            and completed_episodes > 0
+            and completed_episodes % config.working_memory_interval == 0
         ):
-            debug_logger.display_working_memory(learning_loop, i)
+            debug_logger.display_working_memory(learning_loop, completed_episodes)
 
+        env = None
+        info = None
         try:
             # Create environment
             env, info = create_environment(seed)
@@ -1392,6 +1523,7 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
             # Run episode
             result = runner.run_episode(env, info, episode_id)
             results.append(result)
+            completed_episodes += 1
 
             if result["success"]:
                 successes += 1
@@ -1410,7 +1542,29 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
                 except Exception:
                     pass
 
+        except IKFailureError as e:
+            # IK failure is an environment bug, skip this episode
+            ik_failures += 1
+            seed_offset += 1  # Shift to next seed
+            skipped_seeds.append(seed)
+            print(f"    [IK BUG] Skipping {episode_id}: {e}")
+            print(f"    (IK failures so far: {ik_failures}, will try seed {seed + 1} next)")
+
+            # Cleanup on IK failure
+            if env is not None:
+                try:
+                    env.close()
+                except Exception:
+                    pass
+            runner.oracle = None
+            if info and info.get("_xml_filename"):
+                try:
+                    os.remove(info["_xml_filename"])
+                except Exception:
+                    pass
+
         except Exception as e:
+            # Other errors still count as completed episodes (just failed)
             print(f"    ERROR in episode {episode_id}: {e}")
             results.append(
                 {
@@ -1419,15 +1573,28 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
                     "error": str(e),
                 }
             )
+            completed_episodes += 1
+
             # Cleanup on error too
-            if "info" in dir() and info and info.get("_xml_filename"):
+            if env is not None:
+                try:
+                    env.close()
+                except Exception:
+                    pass
+            runner.oracle = None
+            if info and info.get("_xml_filename"):
                 try:
                     os.remove(info["_xml_filename"])
                 except Exception:
                     pass
 
-    # Calculate final metrics
-    success_rate = successes / config.n_episodes if config.n_episodes > 0 else 0.0
+    # Calculate final metrics (only counting completed episodes, not IK failures)
+    success_rate = successes / completed_episodes if completed_episodes > 0 else 0.0
+
+    # Report IK failures
+    if ik_failures > 0:
+        print(f"\n  [IK BUG SUMMARY] Skipped {ik_failures} episodes due to IK failures")
+        print(f"  Skipped seeds: {skipped_seeds[:10]}{'...' if len(skipped_seeds) > 10 else ''}")
 
     print("\n[4/4] Saving results...")
 
@@ -1435,8 +1602,11 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
     summary = {
         "mode": config.mode,
         "n_episodes": config.n_episodes,
+        "completed_episodes": completed_episodes,
         "successes": successes,
         "success_rate": success_rate,
+        "ik_failures": ik_failures,
+        "skipped_seeds": skipped_seeds,
         "timestamp": timestamp,
     }
 
@@ -1454,21 +1624,21 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
 
     # Save final hypothesis/principle snapshots
     if debug_logger and learning_loop:
-        debug_logger.save_hypotheses_snapshot(learning_loop, config.n_episodes)
-        debug_logger.save_principles_snapshot(learning_loop, config.n_episodes)
-        debug_logger.display_working_memory(learning_loop, config.n_episodes)
+        debug_logger.save_hypotheses_snapshot(learning_loop, completed_episodes)
+        debug_logger.save_principles_snapshot(learning_loop, completed_episodes)
+        debug_logger.display_working_memory(learning_loop, completed_episodes)
 
     # Print summary
     print("\n" + "=" * 60)
     print("EXPERIMENT COMPLETE")
     print("=" * 60)
-    print(f"Success Rate: {success_rate:.1%} ({successes}/{config.n_episodes})")
+    print(f"Success Rate: {success_rate:.1%} ({successes}/{completed_episodes})")
+    if ik_failures > 0:
+        print(f"IK Failures (skipped): {ik_failures} episodes")
     print(f"Results saved to: {save_dir}")
     print(f"Hypotheses: {save_dir}/hypotheses_latest.json")
     print(f"Principles: {save_dir}/principles_latest.json")
     print("=" * 60)
-
-    env.close()
 
     return summary
 
