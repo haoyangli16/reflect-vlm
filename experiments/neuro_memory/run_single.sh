@@ -12,6 +12,7 @@
 #   --mode <mode>               Experiment mode: 'baseline' or 'memory' (default: memory)
 #   --episodes <n>              Number of episodes (default: 50)
 #   --seed <n>                  Starting seed (default: 1000001)
+#   --reset-seed <n>            Reset seed for initial state: 1=easy (default), -1=varied difficulty
 #   --name <name>               Experiment name (default: exp)
 #   --output <dir>              Output directory (default: logs/neuro_memory_exp)
 #
@@ -43,6 +44,7 @@ set -e
 MODE="memory"
 N_EPISODES=50
 SEED=1000001
+RESET_SEED=1  # 1=easy initial state (like interact.py), -1=use episode seed for varied difficulty
 EXP_NAME="exp"
 SAVE_DIR="logs/neuro_memory_exp"
 
@@ -68,6 +70,7 @@ while [[ "$#" -gt 0 ]]; do
         --mode) MODE="$2"; shift ;;
         --episodes) N_EPISODES="$2"; shift ;;
         --seed) SEED="$2"; shift ;;
+        --reset-seed) RESET_SEED="$2"; shift ;;
         --name) EXP_NAME="$2"; shift ;;
         --output) SAVE_DIR="$2"; shift ;;
         
@@ -191,6 +194,7 @@ CMD="python experiments/neuro_memory/run_memory_experiment.py \
     --mode $MODE \
     --n_episodes $N_EPISODES \
     --seed_start $SEED \
+    --reset_seed $RESET_SEED \
     --name $EXP_NAME \
     --save_dir $FULL_SAVE_DIR \
     --policy_type $POLICY_TYPE \

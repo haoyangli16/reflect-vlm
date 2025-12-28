@@ -562,6 +562,10 @@ class ExperimentConfig:
     n_episodes: int = 100
     max_steps_per_episode: int = 50
     camera_name: str = "table_back"  # Camera for rendering (matches run-rom.py default)
+    # Reset seed controls the initial physical state of bricks (on table vs inserted)
+    # A fixed reset_seed=1 gives consistent "easy" initial states (like interact.py)
+    # Set to -1 to use the episode seed for varied difficulty
+    reset_seed: int = 1
 
     # ==========================================================================
     # POLICY CONFIGURATION
@@ -743,9 +747,14 @@ class EpisodeRunner:
         Returns:
             Episode result dictionary
         """
-        # Reset environment with seed (extracted from episode_id)
-        seed = int(episode_id.split("_")[-1]) if "_" in episode_id else 0
-        env.reset(seed=seed)
+        # Reset environment with reset_seed
+        # reset_seed controls the initial physical state (bricks on table vs inserted)
+        # Use config.reset_seed for consistent difficulty, or -1 to use episode seed for varied difficulty
+        if self.config.reset_seed >= 0:
+            reset_seed = self.config.reset_seed
+        else:
+            reset_seed = int(episode_id.split("_")[-1]) if "_" in episode_id else 0
+        env.reset(seed=reset_seed)
 
         done = False
         step = 0
@@ -1510,6 +1519,12 @@ Examples:
         default=1000001,
         help="Starting seed for episodes",
     )
+    parser.add_argument(
+        "--reset_seed",
+        type=int,
+        default=1,
+        help="Reset seed for initial physical state (1=easy like interact.py, -1=use episode seed for varied difficulty)",
+    )
 
     # ==========================================================================
     # POLICY OPTIONS (what generates actions)
@@ -1623,6 +1638,7 @@ Examples:
         name=args.name,
         mode=args.mode,
         seed_start=args.seed_start,
+        reset_seed=args.reset_seed,
         n_episodes=args.n_episodes,
         # Policy options
         policy_type=args.policy_type,
