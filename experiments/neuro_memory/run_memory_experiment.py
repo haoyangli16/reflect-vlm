@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+from PIL import Image
 
 # Add project paths
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -596,6 +597,7 @@ class ExperimentConfig:
     verbose: bool = True
     debug: bool = True  # Enable detailed debug logging
     show_prompts: bool = False  # Print prompts to terminal (very verbose)
+    save_images: bool = False  # Save progress images per step for visualization
 
     def get_model_path(self) -> str:
         """Get the appropriate model path."""
@@ -778,9 +780,26 @@ class EpisodeRunner:
         if goal_img is None:
             raise RuntimeError(f"Goal image not found for camera '{camera_name}'")
 
+        # =====================================================================
+        # IMAGE SAVING: Create episode directory and save goal image
+        # =====================================================================
+        episode_img_dir = None
+        if self.config.save_images:
+            episode_img_dir = Path(self.config.save_dir) / "images" / episode_id
+            episode_img_dir.mkdir(parents=True, exist_ok=True)
+            # Save goal image once at episode start
+            goal_pil = Image.fromarray(goal_img)
+            goal_pil.save(episode_img_dir / "goal.png")
+            print(f"  [IMG] Saving images to: {episode_img_dir}")
+
         while not done and step < self.config.max_steps_per_episode:
             # Get current observation using read_pixels (matching run-rom.py)
             img = env.read_pixels(camera_name=camera_name)
+
+            # Save current state image (before action)
+            if episode_img_dir is not None:
+                step_pil = Image.fromarray(img)
+                step_pil.save(episode_img_dir / f"step_{step:03d}_before.png")
 
             # Generate action prompt
             prompt = self._build_action_prompt(env, info, action_history)
@@ -997,6 +1016,25 @@ class EpisodeRunner:
                 )
 
             step += 1
+
+        # =====================================================================
+        # IMAGE SAVING: Save final state and action log
+        # =====================================================================
+        if episode_img_dir is not None:
+            # Save final state image
+            final_img = env.read_pixels(camera_name=camera_name)
+            final_pil = Image.fromarray(final_img)
+            final_pil.save(episode_img_dir / "final.png")
+
+            # Save action log as JSON
+            action_log = {
+                "episode_id": episode_id,
+                "success": success,
+                "total_steps": step,
+                "actions": action_history,
+            }
+            with open(episode_img_dir / "actions.json", "w") as f:
+                json.dump(action_log, f, indent=2)
 
         # End episode in learning loop with attribution (PHASE 3)
         if self.learning_loop and self.config.mode == "memory":
@@ -1572,6 +1610,11 @@ Examples:
         action="store_true",
         help="Print prompts to terminal (first step of each episode)",
     )
+    parser.add_argument(
+        "--save_images",
+        action="store_true",
+        help="Save progress images per step for visualization",
+    )
 
     args = parser.parse_args()
 
@@ -1598,6 +1641,7 @@ Examples:
         show_working_memory=args.show_memory,
         working_memory_interval=args.memory_interval,
         show_prompts=args.show_prompts,
+        save_images=args.save_images,
     )
 
     # Run experiment

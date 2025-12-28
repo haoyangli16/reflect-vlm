@@ -182,22 +182,25 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$PROJECT_ROOT"
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-FULL_SAVE_DIR="${SAVE_DIR}_${MODE}_${TIMESTAMP}"
+FULL_SAVE_DIR="${SAVE_DIR}/exp_${MODE}_${TIMESTAMP}"
 mkdir -p "$FULL_SAVE_DIR"
 
+# FIXED: Pass the FULL timestamped path to Python script
+# This ensures run.log and all JSON files go to the same folder
 CMD="python experiments/neuro_memory/run_memory_experiment.py \
     --mode $MODE \
     --n_episodes $N_EPISODES \
     --seed_start $SEED \
     --name $EXP_NAME \
-    --save_dir $SAVE_DIR \
+    --save_dir $FULL_SAVE_DIR \
     --policy_type $POLICY_TYPE \
     --base_model $BASE_MODEL_PATH \
     --post_model $POST_MODEL_PATH \
     --provider $REFLECTION_PROVIDER \
     --verbose \
     --show_memory \
-    --memory_interval 5"
+    --memory_interval 5 \
+    --save_images"
 
 if [ "$USE_POST_TRAINED" = true ]; then
     CMD="$CMD --use_post_trained"
