@@ -93,6 +93,7 @@ class IKFailureError(Exception):
     maximum allowed steps. The environment prints "Max steps exceeded for `goto`"
     or similar messages when this occurs.
     """
+
     pass
 
 
@@ -705,6 +706,9 @@ def create_environment(seed: int, render_mode: str = "offscreen") -> Tuple[Frank
 
     # Generate the board - returns (xml, info) tuple
     xml, info = generate_xml(seed=seed)
+    if info["n_bodies"] > 5:
+        print(f"Environment too complex, skipping episode {seed}")
+        return None, None
 
     # Write XML to assets directory (where panda.xml and other includes are located)
     # This is critical - MuJoCo XML files use relative includes
@@ -1509,6 +1513,11 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
         try:
             # Create environment
             env, info = create_environment(seed)
+
+            if env is None:
+                seed_offset += 1
+                skipped_seeds.append(seed)
+                continue
 
             # Create oracle for this episode
             # AssemblyOracle needs: brick_ids, brick_descriptions, dependencies, env
