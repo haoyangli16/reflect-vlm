@@ -99,8 +99,8 @@ class IKFailureError(Exception):
 
 # Patterns that indicate IK failure (robot cannot reach target pose)
 IK_FAILURE_PATTERNS = [
-    "Max steps exceeded for `goto`",
-    "Max steps exceeded for aligning",
+    "Max steps exceeded for `goto`"
+    # "Max steps exceeded for aligning",
 ]
 
 
