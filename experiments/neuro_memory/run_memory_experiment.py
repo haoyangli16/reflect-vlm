@@ -535,6 +535,7 @@ class VLMPolicyAgent:
         provider: str,
         model: Optional[str] = None,
         temperature: float = 0.1,
+        enable_thinking: bool = False,
     ):
         """
         Initialize VLM policy agent.
@@ -543,11 +544,13 @@ class VLMPolicyAgent:
             provider: VLM provider ("openai", "gemini", "qwen", "kimi")
             model: Specific model name (or None for provider default)
             temperature: Sampling temperature
+            enable_thinking: Enable chain-of-thought reasoning mode
         """
-        self.vlm = UnifiedVLM(provider=provider, model=model)
+        self.vlm = UnifiedVLM(provider=provider, model=model, enable_thinking=enable_thinking)
         self.temperature = temperature
         self.provider = provider
         self.model = self.vlm.model  # Get the actual model name from UnifiedVLM
+        self.enable_thinking = enable_thinking
 
     def act(
         self,
@@ -685,11 +688,20 @@ class ExperimentConfig:
     step_delay: float = 0.0  # Delay between steps (seconds)
 
     # Ablation settings (for Experiment 5)
-    disable_hypotheses: bool = False  # Disable hypothesis injection
-    disable_principles: bool = False  # Disable principle injection
+    disable_hypotheses: bool = False  # Disable hypothesis injection (No Working Memory)
+    disable_principles: bool = False  # Disable principle injection (No Long-term Memory)
     disable_forgetting: bool = False  # Disable memory forgetting
     disable_folding: bool = False  # Disable experience folding
     disable_resonance: bool = False  # Disable resonance filtering
+    max_memory_size: int = 3000  # Max experiences; set to 0 for "No Episodic" ablation
+    disable_memory_updates: bool = False  # For "Only Principles" ablation (no new learning)
+
+    # Quantity settings (for Experiment 4)
+    max_hypotheses_per_cluster: int = 1  # Max hypotheses generated per cluster
+    max_principles_in_prompt: int = 5  # Max principles shown to VLM
+
+    # Thinking mode (for Experiment 3)
+    thinking_enabled: bool = False  # Enable chain-of-thought reasoning in prompts
 
     # Difficulty filtering (for Experiment 2)
     min_n_body: int = 2  # Minimum number of bodies
@@ -878,7 +890,8 @@ class EpisodeRunner:
         self._episode_action_summary = []  # Clear for attribution
 
         # PHASE 2: Get active hypotheses at episode start
-        if self.learning_loop and self.config.mode == "memory":
+        # Check ablation flag: if disable_hypotheses is True, don't inject hypotheses
+        if self.learning_loop and self.config.mode == "memory" and not self.config.disable_hypotheses:
             self._active_hypotheses = self.learning_loop.get_hypotheses_for_prompt()
         else:
             self._active_hypotheses = []
@@ -931,9 +944,13 @@ class EpisodeRunner:
                 action_type = self._get_expected_action_type(env)
 
                 # Tier 3: Get principles (most reliable, highest priority)
-                self._active_principles, _ = self.learning_loop.get_principles_for_context(
-                    action_type=action_type,
-                )
+                # Check ablation flag: if disable_principles is True, don't inject principles
+                if not self.config.disable_principles:
+                    self._active_principles, _ = self.learning_loop.get_principles_for_context(
+                        action_type=action_type,
+                    )
+                else:
+                    self._active_principles = []
 
                 # Tier 2: Get active hypotheses (under testing)
                 active_hypotheses = self._active_hypotheses
@@ -1159,19 +1176,21 @@ class EpisodeRunner:
                         principles_used=self._active_principles,
                     )
 
-                self.learning_loop.record_experience(
-                    action=action,
-                    success=action_success,
-                    fail=action_fail,
-                    fail_tag=fail_tag,
-                    symbolic_state=symbolic_state,
-                    oracle_action=oracle_action,
-                    active_principles=self._active_principles,
-                    extra_metrics={
-                        "episode_id": episode_id,
-                        "step": step,
-                    },
-                )
+                # Check ablation flag: if disable_memory_updates is True, don't record new experiences
+                if not self.config.disable_memory_updates:
+                    self.learning_loop.record_experience(
+                        action=action,
+                        success=action_success,
+                        fail=action_fail,
+                        fail_tag=fail_tag,
+                        symbolic_state=symbolic_state,
+                        oracle_action=oracle_action,
+                        active_principles=self._active_principles,
+                        extra_metrics={
+                            "episode_id": episode_id,
+                            "step": step,
+                        },
+                    )
 
             step += 1
 
@@ -1561,8 +1580,10 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
             provider=config.policy_provider,
             model=config.policy_model,
             temperature=0.1,
+            enable_thinking=config.thinking_enabled,
         )
-        print(f"  VLM Policy: {config.policy_provider}/{base_agent.model}")
+        thinking_str = " (thinking)" if config.thinking_enabled else ""
+        print(f"  VLM Policy: {config.policy_provider}/{base_agent.model}{thinking_str}")
     else:
         # Use LLaVA BC policy (default)
         model_path = config.get_model_path()
@@ -1590,6 +1611,11 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
             vlm_model=config.vlm_model,
             save_path=str(save_dir),
             auto_save_interval=20,
+            # Quantity settings (Experiment 4)
+            max_hypotheses_per_cluster=config.max_hypotheses_per_cluster,
+            max_principles_in_prompt=config.max_principles_in_prompt,
+            # Memory size setting (Experiment 5 ablation)
+            max_memory_size=config.max_memory_size,
         )
 
         # Load existing state if resuming
@@ -1602,15 +1628,21 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
 
         print(f"  Consolidation interval: {config.consolidation_interval} episodes")
         print(f"  VLM for reflection: {config.vlm_provider or 'rule-based'}")
+        print(f"  Max hypotheses/cluster: {config.max_hypotheses_per_cluster}")
+        print(f"  Max principles in prompt: {config.max_principles_in_prompt}")
 
         # Apply ablation settings
         if config.disable_forgetting:
             learning_loop.config.max_memory_size = 1000000  # Effectively disable
             print(f"  [ABLATION] Forgetting DISABLED")
+        if config.max_memory_size == 0:
+            print(f"  [ABLATION] Episodic memory DISABLED (max_memory_size=0)")
         if config.disable_hypotheses:
             print(f"  [ABLATION] Hypothesis injection DISABLED")
         if config.disable_principles:
             print(f"  [ABLATION] Principle injection DISABLED")
+        if config.disable_memory_updates:
+            print(f"  [ABLATION] Memory updates DISABLED (only pre-loaded principles)")
     else:
         print("\n[2/4] Baseline mode - no learning loop")
 
@@ -2032,6 +2064,42 @@ Examples:
         action="store_true",
         help="Disable resonance filtering",
     )
+    parser.add_argument(
+        "--max_memory_size",
+        type=int,
+        default=3000,
+        help="Max experiences in memory (set to 0 for 'No Episodic' ablation)",
+    )
+    parser.add_argument(
+        "--disable_memory_updates",
+        action="store_true",
+        help="Disable new memory updates (for 'Only Principles' ablation)",
+    )
+
+    # ==========================================================================
+    # QUANTITY OPTIONS (for Experiment 4)
+    # ==========================================================================
+    parser.add_argument(
+        "--max_hypotheses_per_cluster",
+        type=int,
+        default=1,
+        help="Max hypotheses generated per cluster (default: 1)",
+    )
+    parser.add_argument(
+        "--max_principles_in_prompt",
+        type=int,
+        default=5,
+        help="Max principles shown to VLM (default: 5)",
+    )
+
+    # ==========================================================================
+    # THINKING MODE (for Experiment 3)
+    # ==========================================================================
+    parser.add_argument(
+        "--thinking_enabled",
+        action="store_true",
+        help="Enable chain-of-thought reasoning in prompts",
+    )
 
     # ==========================================================================
     # DIFFICULTY OPTIONS (for Experiment 2)
@@ -2088,6 +2156,13 @@ Examples:
         disable_forgetting=args.disable_forgetting,
         disable_folding=args.disable_folding,
         disable_resonance=args.disable_resonance,
+        max_memory_size=args.max_memory_size,
+        disable_memory_updates=args.disable_memory_updates,
+        # Quantity options
+        max_hypotheses_per_cluster=args.max_hypotheses_per_cluster,
+        max_principles_in_prompt=args.max_principles_in_prompt,
+        # Thinking mode
+        thinking_enabled=args.thinking_enabled,
         # Difficulty options
         min_n_body=args.min_n_body,
         max_n_body=args.max_n_body,

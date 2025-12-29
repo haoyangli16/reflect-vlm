@@ -226,9 +226,16 @@ Output your analysis as JSON:
 class BaseVLM(ABC):
     """Abstract base class for VLM providers."""
 
-    def __init__(self, model: str, api_key: Optional[str] = None, **kwargs):
+    def __init__(
+        self,
+        model: str,
+        api_key: Optional[str] = None,
+        enable_thinking: bool = False,
+        **kwargs,
+    ):
         self.model = model
         self.api_key = api_key
+        self.enable_thinking = enable_thinking
         self.kwargs = kwargs
 
     @abstractmethod
@@ -427,6 +434,8 @@ class OpenAIVLM(BaseVLM):
 
     Requires: openai>=1.0.0
     API Key: OPENAI_API_KEY environment variable
+
+    Thinking mode: Uses prompt-based chain-of-thought reasoning.
     """
 
     def __init__(
@@ -434,9 +443,10 @@ class OpenAIVLM(BaseVLM):
         model: str = "gpt-5.1",
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
+        enable_thinking: bool = False,
         **kwargs,
     ):
-        super().__init__(model, api_key, **kwargs)
+        super().__init__(model, api_key, enable_thinking=enable_thinking, **kwargs)
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         if not self.api_key:
             raise ValueError("OpenAI API key required. Set OPENAI_API_KEY env var or pass api_key.")
@@ -462,9 +472,18 @@ class OpenAIVLM(BaseVLM):
     ) -> str:
         messages = []
 
-        # System message
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
+        # System message (enhanced with thinking prompt if enabled)
+        effective_system = system_prompt or ""
+        if self.enable_thinking:
+            thinking_prefix = (
+                "You are a careful and methodical assistant. "
+                "Before providing your final answer, think through the problem step by step. "
+                "Show your reasoning process, then provide your final answer.\n\n"
+            )
+            effective_system = thinking_prefix + effective_system
+
+        if effective_system:
+            messages.append({"role": "system", "content": effective_system})
 
         # User message with images
         user_content = []
@@ -480,7 +499,12 @@ class OpenAIVLM(BaseVLM):
                         }
                     )
 
-        user_content.append({"type": "text", "text": prompt})
+        # Add thinking prompt suffix if enabled
+        effective_prompt = prompt
+        if self.enable_thinking:
+            effective_prompt = prompt + "\n\nThink step by step before answering."
+
+        user_content.append({"type": "text", "text": effective_prompt})
         messages.append({"role": "user", "content": user_content})
 
         try:
@@ -527,15 +551,27 @@ class GeminiVLM(BaseVLM):
 
     Requires: google-genai>=0.1.0
     API Key: GOOGLE_API_KEY environment variable
+
+    Thinking mode: Uses native thinking models (gemini-2.5-flash-thinking) when available,
+    or falls back to prompt-based chain-of-thought reasoning.
     """
+
+    # Mapping from base model to thinking model
+    THINKING_MODELS = {
+        "gemini-2.5-flash": "gemini-2.5-flash-thinking-exp-01-21",
+        "gemini-2.5-pro": "gemini-2.5-pro-exp-03-25",
+        "gemini-3-flash-preview": "gemini-3-flash-preview",  # May have native thinking
+        "gemini-3-pro-preview": "gemini-3-pro-preview",
+    }
 
     def __init__(
         self,
         model: str = "gemini-3-pro-preview",
         api_key: Optional[str] = None,
+        enable_thinking: bool = False,
         **kwargs,
     ):
-        super().__init__(model, api_key, **kwargs)
+        super().__init__(model, api_key, enable_thinking=enable_thinking, **kwargs)
         self.api_key = api_key or os.environ.get("GOOGLE_API_KEY")
         if not self.api_key:
             raise ValueError("Google API key required. Set GOOGLE_API_KEY env var or pass api_key.")
@@ -550,6 +586,21 @@ class GeminiVLM(BaseVLM):
         self.client = genai.Client(api_key=self.api_key)
         self._genai = genai
 
+        # If thinking enabled, try to use a thinking model variant
+        if self.enable_thinking:
+            if model in self.THINKING_MODELS:
+                self.effective_model = self.THINKING_MODELS[model]
+            elif "thinking" not in model.lower():
+                # Fall back to prompt-based thinking
+                self.effective_model = model
+                self._use_prompt_thinking = True
+            else:
+                self.effective_model = model
+                self._use_prompt_thinking = False
+        else:
+            self.effective_model = model
+            self._use_prompt_thinking = False
+
     def generate(
         self,
         prompt: str,
@@ -560,9 +611,18 @@ class GeminiVLM(BaseVLM):
     ) -> str:
         contents = []
 
-        # Add system prompt as first text
-        if system_prompt:
-            contents.append(system_prompt + "\n\n")
+        # Add system prompt as first text (enhanced with thinking if using prompt-based)
+        effective_system = system_prompt or ""
+        if self.enable_thinking and getattr(self, "_use_prompt_thinking", False):
+            thinking_prefix = (
+                "You are a careful and methodical assistant. "
+                "Before providing your final answer, think through the problem step by step. "
+                "Show your reasoning process, then provide your final answer.\n\n"
+            )
+            effective_system = thinking_prefix + effective_system
+
+        if effective_system:
+            contents.append(effective_system + "\n\n")
 
         # Add images
         if images:
@@ -580,12 +640,16 @@ class GeminiVLM(BaseVLM):
                     )
                     contents.append(img)
 
-        # Add prompt
-        contents.append(prompt)
+        # Add prompt (enhanced with thinking suffix if using prompt-based)
+        effective_prompt = prompt
+        if self.enable_thinking and getattr(self, "_use_prompt_thinking", False):
+            effective_prompt = prompt + "\n\nThink step by step before answering."
+
+        contents.append(effective_prompt)
 
         try:
             response = self.client.models.generate_content(
-                model=self.model,
+                model=self.effective_model,
                 contents=contents,
                 config={
                     "max_output_tokens": max_tokens,
@@ -593,8 +657,8 @@ class GeminiVLM(BaseVLM):
                 },
             )
 
-            # Handle thinking models
-            if "thinking" in self.model.lower():
+            # Handle native thinking models (return second part which is the answer)
+            if "thinking" in self.effective_model.lower():
                 # Thinking models return [thinking_part, answer_part]
                 if len(response.candidates[0].content.parts) > 1:
                     return response.candidates[0].content.parts[1].text.strip()
@@ -619,6 +683,8 @@ class QwenVLM(BaseVLM):
 
     API Key: DASHSCOPE_API_KEY or QWEN_API_KEY environment variable
     Base URL: https://dashscope.aliyuncs.com/compatible-mode/v1
+
+    Thinking mode: Qwen3 natively supports thinking mode via enable_thinking parameter.
     """
 
     # DashScope OpenAI-compatible endpoint
@@ -629,9 +695,10 @@ class QwenVLM(BaseVLM):
         model: str = "qwen3-vl-235b-a22b-instruct",
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
+        enable_thinking: bool = False,
         **kwargs,
     ):
-        super().__init__(model, api_key, **kwargs)
+        super().__init__(model, api_key, enable_thinking=enable_thinking, **kwargs)
 
         # Get API key from environment
         self.api_key = (
@@ -689,12 +756,15 @@ class QwenVLM(BaseVLM):
         messages.append({"role": "user", "content": user_content})
 
         try:
+            # Qwen3 natively supports thinking mode via enable_thinking parameter
+            extra_body = {"enable_thinking": self.enable_thinking}
+
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
-                extra_body={"enable_thinking": True},  # Enable thinking for Qwen VL
+                extra_body=extra_body,
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
@@ -796,6 +866,14 @@ class UnifiedVLM:
         vlm = UnifiedVLM(provider="gemini", model="gemini-3-pro-preview")
         vlm = UnifiedVLM(provider="qwen", model="qwen3-vl-235b-a22b-instruct")
         vlm = UnifiedVLM(provider="kimi", model="moonshot-v1-8k-vision-preview")
+
+        # With thinking mode enabled
+        vlm = UnifiedVLM(provider="qwen", model="qwen3-vl-235b-a22b-instruct", enable_thinking=True)
+
+    Thinking Mode Support:
+        - Qwen: Native support via enable_thinking parameter in API
+        - Gemini: Uses thinking model variants (e.g., gemini-2.5-flash-thinking)
+        - OpenAI/GPT: Uses prompt-based chain-of-thought reasoning
     """
 
     PROVIDERS = {
@@ -833,6 +911,7 @@ class UnifiedVLM:
         provider: str = "openai",
         model: Optional[str] = None,
         api_key: Optional[str] = None,
+        enable_thinking: bool = False,
         **kwargs,
     ):
         provider = provider.lower()
@@ -844,9 +923,10 @@ class UnifiedVLM:
         model = model or self.DEFAULT_MODELS[provider]
         vlm_class = self.PROVIDERS[provider]
 
-        self._vlm = vlm_class(model=model, api_key=api_key, **kwargs)
+        self._vlm = vlm_class(model=model, api_key=api_key, enable_thinking=enable_thinking, **kwargs)
         self.provider = provider
         self.model = model
+        self.enable_thinking = enable_thinking
 
     def generate(self, prompt: str, images: Optional[List[Any]] = None, **kwargs) -> str:
         return self._vlm.generate(prompt, images, **kwargs)
