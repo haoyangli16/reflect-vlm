@@ -819,7 +819,7 @@ class UnifiedVLM:
         "gemini": "gemini-3-flash-preview",
         "google": "gemini-3-flash-preview",
         # Use the model that works in your test file
-        "qwen": "qwen3-vl-plus", # "qwen3-vl-flash",
+        "qwen": "qwen3-vl-flash", # "qwen3-vl-flash",
         "alibaba": "qwen3-vl-flash",
         "dashscope": "qwen3-vl-flash",
         "kimi": "kimi-k2-0905-preview",
