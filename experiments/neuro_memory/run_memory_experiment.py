@@ -974,7 +974,9 @@ class EpisodeRunner:
                 # This significantly increases measured success rate
                 # =====================================================================
                 if action_success and env.is_success():
-                    print(f"    [AUTO-DONE] Goal achieved after '{action}' - ending episode as success")
+                    print(
+                        f"    [AUTO-DONE] Goal achieved after '{action}' - ending episode as success"
+                    )
                     success = True
                     done = True
 
@@ -1022,12 +1024,28 @@ class EpisodeRunner:
 
             # If action "succeeded" but state didn't change for insert/pick actions
             is_stuck = False
+            blocking_info = ""  # Track what's blocking for VLM feedback
             if action_success and repeated_action_count >= 3:
                 action_type = action.split()[0].lower() if action else ""
                 if action_type == "insert" and current_holding is not None:
-                    # Insert "succeeded" but still holding = no progress
-                    print(f"    [NO-PROGRESS] Insert succeeded but still holding object")
-                    action_history[-1] = f"{action} [NO PROGRESS - TRY DIFFERENT ACTION]"
+                    # Insert "succeeded" but still holding = slot is blocked!
+                    # Extract symbolic state to find what's blocking
+                    try:
+                        temp_symbolic = extract_symbolic_state(env, action)
+                        blocking_colors = temp_symbolic.get("target_blocked_by_colors", [])
+                        # Filter out already-inserted pieces
+                        remaining = temp_symbolic.get("remaining_pieces", [])
+                        blocking_remaining = [c for c in blocking_colors if c in remaining]
+                        if blocking_remaining:
+                            blocking_info = f" Slot blocked by: {', '.join(blocking_remaining)}. Remove blocking brick(s) first!"
+                            print(f"    [NO-PROGRESS] Insert failed - slot blocked by {blocking_remaining}")
+                        else:
+                            blocking_info = " Slot may be physically blocked. Try a different target."
+                            print(f"    [NO-PROGRESS] Insert succeeded but still holding object")
+                    except Exception:
+                        print(f"    [NO-PROGRESS] Insert succeeded but still holding object")
+
+                    action_history[-1] = f"{action} [FAILED - SLOT OCCUPIED!{blocking_info}]"
                     action_success = False  # Mark as failure for learning
                     fail_tag = "no_progress"
                     is_stuck = True
@@ -1068,10 +1086,13 @@ class EpisodeRunner:
             )
 
             # Get oracle action (for learning from mistakes)
+            # Also get oracle action when stuck, not just when action_fail
             oracle_action = None
-            if self.oracle and action_fail:
+            if self.oracle and (action_fail or is_stuck):
                 try:
                     oracle_action = self.oracle.act()
+                    if is_stuck and oracle_action:
+                        print(f"    [ORACLE] Correct action would be: {oracle_action}")
                 except Exception:
                     pass
 
