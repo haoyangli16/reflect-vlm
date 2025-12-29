@@ -968,6 +968,16 @@ class EpisodeRunner:
                 else:
                     action_history.append(action)
 
+                # =====================================================================
+                # PART (ii): Check success after EVERY action execution
+                # Don't wait for VLM to output "done" - the simulator is ground truth
+                # This significantly increases measured success rate
+                # =====================================================================
+                if action_success and env.is_success():
+                    print(f"    [AUTO-DONE] Goal achieved after '{action}' - ending episode as success")
+                    success = True
+                    done = True
+
             # =====================================================================
             # PHASE 1: Add errors to Tier 1 reflex buffer + stuck detection
             # =====================================================================
@@ -1227,7 +1237,19 @@ class EpisodeRunner:
             "",
             "**insert [color]**: Insert the brick you're holding INTO THE BOARD. This will only succeed if: (1) you're holding the brick, (2) it's properly oriented, and (3) the target slot is not blocked by other bricks.",
             "",
-            "**done**: Declare the task complete when the current state matches the goal state.",
+            "**done**: Declare the task complete. Use this ONLY when the current observation matches the goal image - all required bricks are correctly inserted in their target positions.",
+            "",
+            "---",
+            "## ⚡ CRITICAL: BEFORE EVERY ACTION, FIRST CHECK IF DONE",
+            "",
+            "**STEP 0 (MANDATORY)**: Compare the current observation with the goal image:",
+            "- If the current state MATCHES the goal state (all bricks are in their correct positions as shown in the goal image), output `done` IMMEDIATELY.",
+            "- Do NOT pick up, remove, or re-insert bricks after the goal is achieved.",
+            "- Unnecessary actions after goal completion waste steps and may break the solution.",
+            "",
+            "**What 'done' means**: The task is COMPLETE. The current observation matches the goal image. Any further action is unnecessary because we already achieved the goal.",
+            "",
+            "**Common mistake to avoid**: After successfully inserting the last brick, do NOT pick it back up to 'verify' or 're-insert'. If the goal is achieved, just output `done`.",
             "",
         ]
         sections.append("\n".join(action_defs))
