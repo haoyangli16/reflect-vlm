@@ -676,6 +676,25 @@ class ExperimentConfig:
     show_prompts: bool = False  # Print prompts to terminal (very verbose)
     save_images: bool = False  # Save progress images per step for visualization
 
+    # Resume functionality
+    resume: bool = False  # If True, resume from previous run
+    resume_dir: Optional[str] = None  # Directory to resume from (if not specified, uses latest)
+
+    # Rate limiting (to avoid API throttling)
+    api_delay: float = 0.0  # Delay between API calls (seconds)
+    step_delay: float = 0.0  # Delay between steps (seconds)
+
+    # Ablation settings (for Experiment 5)
+    disable_hypotheses: bool = False  # Disable hypothesis injection
+    disable_principles: bool = False  # Disable principle injection
+    disable_forgetting: bool = False  # Disable memory forgetting
+    disable_folding: bool = False  # Disable experience folding
+    disable_resonance: bool = False  # Disable resonance filtering
+
+    # Difficulty filtering (for Experiment 2)
+    min_n_body: int = 2  # Minimum number of bodies
+    max_n_body: int = 5  # Maximum number of bodies (default)
+
     def get_model_path(self) -> str:
         """Get the appropriate model path."""
         path = self.post_model_path if self.use_post_trained else self.base_model_path
@@ -692,11 +711,22 @@ class ExperimentConfig:
 # ============================================================================
 
 
-def create_environment(seed: int, render_mode: str = "offscreen") -> Tuple[FrankaAssemblyEnv, Dict]:
+def create_environment(
+    seed: int,
+    render_mode: str = "offscreen",
+    min_n_body: int = 2,
+    max_n_body: int = 5,
+) -> Tuple[FrankaAssemblyEnv, Dict]:
     """
     Create a FrankaAssemblyEnv for a given seed.
 
     This follows the same pattern as run-rom.py to ensure compatibility.
+
+    Args:
+        seed: Random seed for environment generation
+        render_mode: Rendering mode for the environment
+        min_n_body: Minimum number of bodies (for difficulty filtering)
+        max_n_body: Maximum number of bodies (for difficulty filtering)
 
     Returns:
         Tuple of (environment, env_info_dict)
@@ -706,8 +736,12 @@ def create_environment(seed: int, render_mode: str = "offscreen") -> Tuple[Frank
 
     # Generate the board - returns (xml, info) tuple
     xml, info = generate_xml(seed=seed)
-    if info["n_bodies"] > 5:
-        print(f"Environment too complex, skipping episode {seed}")
+
+    # Difficulty filtering
+    n_body = info["n_bodies"]
+    if n_body < min_n_body or n_body > max_n_body:
+        reason = "too simple" if n_body < min_n_body else "too complex"
+        print(f"Environment {reason} (n_body={n_body}), skipping episode {seed}")
         return None, None
 
     # Write XML to assets directory (where panda.xml and other includes are located)
@@ -1425,29 +1459,87 @@ class EpisodeRunner:
 # ============================================================================
 
 
+def find_latest_run_dir(base_dir: str, name: str, mode: str) -> Optional[Path]:
+    """Find the latest run directory matching the pattern."""
+    base = Path(base_dir)
+    if not base.exists():
+        return None
+
+    # Look for directories matching pattern: {name}_{mode}_*
+    pattern = f"{name}_{mode}_*"
+    matches = sorted(base.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+    return matches[0] if matches else None
+
+
 def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
     """
     Run the full experiment.
 
+    Supports resuming from previous runs if --resume is specified.
+
     Returns:
         Experiment results summary
     """
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    save_dir = Path(config.save_dir) / f"{config.name}_{config.mode}_{timestamp}"
-    save_dir.mkdir(parents=True, exist_ok=True)
+    # =========================================================================
+    # Handle Resume Logic
+    # =========================================================================
+    resume_state = None
+    start_episode = 0
+    previous_results = []
+
+    if config.resume:
+        # Find directory to resume from
+        if config.resume_dir:
+            resume_path = Path(config.resume_dir)
+        else:
+            resume_path = find_latest_run_dir(config.save_dir, config.name, config.mode)
+
+        if resume_path and resume_path.exists():
+            print(f"[RESUME] Found previous run at: {resume_path}")
+
+            # Load previous results
+            results_file = resume_path / "episode_results.jsonl"
+            if results_file.exists():
+                with open(results_file) as f:
+                    previous_results = [json.loads(line) for line in f if line.strip()]
+                start_episode = len(previous_results)
+                print(f"[RESUME] Loaded {start_episode} previous episodes")
+
+            # Load metadata for seed offset
+            metadata_file = resume_path / "metadata.json"
+            if metadata_file.exists():
+                with open(metadata_file) as f:
+                    resume_state = json.load(f)
+                print(f"[RESUME] Loaded metadata from {metadata_file}")
+
+            # Use same save_dir for continuity
+            save_dir = resume_path
+        else:
+            print(f"[RESUME] No previous run found, starting fresh")
+            config.resume = False
+
+    if not config.resume:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        save_dir = Path(config.save_dir) / f"{config.name}_{config.mode}_{timestamp}"
+        save_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 60)
     print(f"NEURO-SYMBOLIC MEMORY EXPERIMENT")
     print("=" * 60)
     print(f"Mode: {config.mode}")
-    print(f"Episodes: {config.n_episodes}")
+    print(f"Episodes: {config.n_episodes}" + (f" (resuming from {start_episode})" if config.resume else ""))
     print(f"Save Dir: {save_dir}")
+    print(f"Difficulty: n_body in [{config.min_n_body}, {config.max_n_body}]")
     print(f"Policy: {config.policy_type.upper()}", end="")
     if config.policy_type == "vlm":
         print(f" ({config.policy_provider}/{config.policy_model or 'default'})")
     else:
         print(f" (LLaVA)")
     print(f"Reflection VLM: {config.vlm_provider or 'rule-based'}")
+    if config.api_delay > 0:
+        print(f"API Delay: {config.api_delay}s")
+    if config.resume:
+        print(f"[RESUME MODE] Continuing from episode {start_episode}")
     print("=" * 60)
 
     # Save config
@@ -1500,9 +1592,25 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
             auto_save_interval=20,
         )
 
-        learning_loop = ScientificLearningLoop(config=loop_config)
+        # Load existing state if resuming
+        if config.resume and save_dir.exists() and (save_dir / "memory.pt").exists():
+            print(f"  [RESUME] Loading learning loop state from {save_dir}")
+            learning_loop = ScientificLearningLoop.load_state(str(save_dir), config=loop_config)
+            print(f"  [RESUME] Loaded {learning_loop._episode_count} episodes of state")
+        else:
+            learning_loop = ScientificLearningLoop(config=loop_config)
+
         print(f"  Consolidation interval: {config.consolidation_interval} episodes")
         print(f"  VLM for reflection: {config.vlm_provider or 'rule-based'}")
+
+        # Apply ablation settings
+        if config.disable_forgetting:
+            learning_loop.config.max_memory_size = 1000000  # Effectively disable
+            print(f"  [ABLATION] Forgetting DISABLED")
+        if config.disable_hypotheses:
+            print(f"  [ABLATION] Hypothesis injection DISABLED")
+        if config.disable_principles:
+            print(f"  [ABLATION] Principle injection DISABLED")
     else:
         print("\n[2/4] Baseline mode - no learning loop")
 
@@ -1524,13 +1632,19 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
     # Run episodes
     # We continue until we have n_episodes successful (non-IK-failure) episodes
     print("\n[3/4] Running episodes...")
-    results = []
-    successes = 0
-    completed_episodes = 0  # Episodes that ran without IK failure
+    results = previous_results.copy() if config.resume else []
+    successes = sum(1 for r in results if r.get("success", False))
+    completed_episodes = start_episode  # Start from resume point
     ik_failures = 0  # Episodes skipped due to IK failure
     skipped_seeds = []  # Seeds that had IK failures
 
     seed_offset = 0  # Offset to get next seed when skipping
+
+    # Calculate starting seed offset for resume
+    if config.resume and resume_state:
+        # Use the seed offset from previous run if available
+        seed_offset = resume_state.get("seed_offset", 0)
+        skipped_seeds = resume_state.get("skipped_seeds", [])
 
     while completed_episodes < config.n_episodes:
         seed = config.seed_start + completed_episodes + seed_offset
@@ -1554,8 +1668,12 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
         env = None
         info = None
         try:
-            # Create environment
-            env, info = create_environment(seed)
+            # Create environment with difficulty filtering
+            env, info = create_environment(
+                seed,
+                min_n_body=config.min_n_body,
+                max_n_body=config.max_n_body,
+            )
 
             if env is None:
                 seed_offset += 1
@@ -1659,7 +1777,9 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
         "success_rate": success_rate,
         "ik_failures": ik_failures,
         "skipped_seeds": skipped_seeds,
-        "timestamp": timestamp,
+        "seed_offset": seed_offset,  # For resume
+        "timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
+        "difficulty": {"min_n_body": config.min_n_body, "max_n_body": config.max_n_body},
     }
 
     if learning_loop:
@@ -1853,6 +1973,82 @@ Examples:
         help="Save progress images per step for visualization",
     )
 
+    # ==========================================================================
+    # RESUME OPTIONS
+    # ==========================================================================
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from previous run",
+    )
+    parser.add_argument(
+        "--resume_dir",
+        type=str,
+        default=None,
+        help="Directory to resume from (if not specified, finds latest)",
+    )
+
+    # ==========================================================================
+    # RATE LIMITING OPTIONS
+    # ==========================================================================
+    parser.add_argument(
+        "--api_delay",
+        type=float,
+        default=0.0,
+        help="Delay between API calls in seconds (for rate limiting)",
+    )
+    parser.add_argument(
+        "--step_delay",
+        type=float,
+        default=0.0,
+        help="Delay between steps in seconds",
+    )
+
+    # ==========================================================================
+    # ABLATION OPTIONS (for Experiment 5)
+    # ==========================================================================
+    parser.add_argument(
+        "--disable_hypotheses",
+        action="store_true",
+        help="Disable hypothesis injection in prompts",
+    )
+    parser.add_argument(
+        "--disable_principles",
+        action="store_true",
+        help="Disable principle injection in prompts",
+    )
+    parser.add_argument(
+        "--disable_forgetting",
+        action="store_true",
+        help="Disable memory forgetting mechanism",
+    )
+    parser.add_argument(
+        "--disable_folding",
+        action="store_true",
+        help="Disable experience folding mechanism",
+    )
+    parser.add_argument(
+        "--disable_resonance",
+        action="store_true",
+        help="Disable resonance filtering",
+    )
+
+    # ==========================================================================
+    # DIFFICULTY OPTIONS (for Experiment 2)
+    # ==========================================================================
+    parser.add_argument(
+        "--min_n_body",
+        type=int,
+        default=2,
+        help="Minimum number of bodies for difficulty filtering",
+    )
+    parser.add_argument(
+        "--max_n_body",
+        type=int,
+        default=5,
+        help="Maximum number of bodies for difficulty filtering",
+    )
+
     args = parser.parse_args()
 
     # Build config
@@ -1880,6 +2076,21 @@ Examples:
         working_memory_interval=args.memory_interval,
         show_prompts=args.show_prompts,
         save_images=args.save_images,
+        # Resume options
+        resume=args.resume,
+        resume_dir=args.resume_dir,
+        # Rate limiting
+        api_delay=args.api_delay,
+        step_delay=args.step_delay,
+        # Ablation options
+        disable_hypotheses=args.disable_hypotheses,
+        disable_principles=args.disable_principles,
+        disable_forgetting=args.disable_forgetting,
+        disable_folding=args.disable_folding,
+        disable_resonance=args.disable_resonance,
+        # Difficulty options
+        min_n_body=args.min_n_body,
+        max_n_body=args.max_n_body,
     )
 
     # Run experiment
