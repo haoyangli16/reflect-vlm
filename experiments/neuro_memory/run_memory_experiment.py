@@ -27,9 +27,11 @@ from __future__ import annotations
 import roboworld.fix_triton_import
 
 import argparse
+import atexit
 import io
 import json
 import os
+import signal
 import sys
 import time
 from contextlib import redirect_stdout
@@ -1610,7 +1612,7 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
             vlm_provider=config.vlm_provider if config.vlm_provider != "rule" else None,
             vlm_model=config.vlm_model,
             save_path=str(save_dir),
-            auto_save_interval=20,
+            auto_save_interval=5,  # Save every 5 episodes for better resume support
             # Quantity settings (Experiment 4)
             max_hypotheses_per_cluster=config.max_hypotheses_per_cluster,
             max_principles_in_prompt=config.max_principles_in_prompt,
@@ -1678,6 +1680,27 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
         seed_offset = resume_state.get("seed_offset", 0)
         skipped_seeds = resume_state.get("skipped_seeds", [])
 
+    # Setup signal handler for graceful shutdown
+    def save_on_interrupt(signum, frame):
+        print("\n\n[INTERRUPT] Saving state before exit...")
+        if learning_loop:
+            learning_loop.save_state()
+            print(f"[INTERRUPT] Memory state saved to {save_dir}")
+        # Save metadata for resume
+        metadata = {
+            "completed_episodes": completed_episodes,
+            "seed_offset": seed_offset,
+            "skipped_seeds": skipped_seeds,
+            "interrupted": True,
+        }
+        with open(save_dir / "metadata.json", "w") as f:
+            json.dump(metadata, f, indent=2)
+        print(f"[INTERRUPT] Metadata saved. Run with --resume to continue.")
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, save_on_interrupt)
+    signal.signal(signal.SIGTERM, save_on_interrupt)
+
     while completed_episodes < config.n_episodes:
         seed = config.seed_start + completed_episodes + seed_offset
         episode_id = f"ep_{seed}"
@@ -1744,6 +1767,10 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
                 except Exception:
                     pass
 
+            # Incremental save: append episode result to file for resume support
+            with open(save_dir / "episode_results.jsonl", "a") as f:
+                f.write(json.dumps(result) + "\n")
+
         except IKFailureError as e:
             # IK failure is an environment bug, skip this episode
             ik_failures += 1
@@ -1768,14 +1795,17 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
         except Exception as e:
             # Other errors still count as completed episodes (just failed)
             print(f"    ERROR in episode {episode_id}: {e}")
-            results.append(
-                {
-                    "episode_id": episode_id,
-                    "success": False,
-                    "error": str(e),
-                }
-            )
+            error_result = {
+                "episode_id": episode_id,
+                "success": False,
+                "error": str(e),
+            }
+            results.append(error_result)
             completed_episodes += 1
+
+            # Incremental save for error episodes too
+            with open(save_dir / "episode_results.jsonl", "a") as f:
+                f.write(json.dumps(error_result) + "\n")
 
             # Cleanup on error too
             if env is not None:
