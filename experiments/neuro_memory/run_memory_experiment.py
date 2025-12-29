@@ -537,7 +537,7 @@ class VLMPolicyAgent:
         provider: str,
         model: Optional[str] = None,
         temperature: float = 0.1,
-        enable_thinking: bool = False,
+        enable_thinking: bool = True,
     ):
         """
         Initialize VLM policy agent.

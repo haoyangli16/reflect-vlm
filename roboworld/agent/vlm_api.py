@@ -230,7 +230,7 @@ class BaseVLM(ABC):
         self,
         model: str,
         api_key: Optional[str] = None,
-        enable_thinking: bool = False,
+        enable_thinking: bool = True,
         **kwargs,
     ):
         self.model = model
@@ -449,7 +449,7 @@ class OpenAIVLM(BaseVLM):
         model: str = "gpt-5.1",
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
-        enable_thinking: bool = False,
+        enable_thinking: bool = True,
         reasoning_effort: str = "medium",  # "none", "low", "medium", "high"
         **kwargs,
     ):
@@ -639,7 +639,7 @@ class GeminiVLM(BaseVLM):
         self,
         model: str = "gemini-3-pro-preview",
         api_key: Optional[str] = None,
-        enable_thinking: bool = False,
+        enable_thinking: bool = True,
         thinking_level: str = "medium",  # For Gemini 3: "low", "medium", "high", "minimal" (Flash only)
         thinking_budget: int = 1024,  # For Gemini 2.5: 0 to disable, -1 for dynamic
         **kwargs,
@@ -768,7 +768,7 @@ class QwenVLM(BaseVLM):
         model: str = "qwen3-vl-235b-a22b-instruct",
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
-        enable_thinking: bool = False,
+        enable_thinking: bool = True,
         **kwargs,
     ):
         super().__init__(model, api_key, enable_thinking=enable_thinking, **kwargs)
@@ -990,7 +990,7 @@ class UnifiedVLM:
         provider: str = "openai",
         model: Optional[str] = None,
         api_key: Optional[str] = None,
-        enable_thinking: bool = False,
+        enable_thinking: bool = True,
         **kwargs,
     ):
         provider = provider.lower()
