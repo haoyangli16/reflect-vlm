@@ -435,8 +435,14 @@ class OpenAIVLM(BaseVLM):
     Requires: openai>=1.0.0
     API Key: OPENAI_API_KEY environment variable
 
-    Thinking mode: Uses prompt-based chain-of-thought reasoning.
+    Thinking/Reasoning mode:
+    - Uses client.responses.create() API with reasoning={"effort": "medium/high"}
+    - Only supported by GPT-5 series, o1, o3 models (NOT GPT-4o)
+    - See: https://platform.openai.com/docs/guides/reasoning
     """
+
+    # Models that support the reasoning API
+    REASONING_MODELS = ["gpt-5", "gpt-5.1", "gpt-5.2", "o1", "o3", "o4-mini"]
 
     def __init__(
         self,
@@ -444,12 +450,15 @@ class OpenAIVLM(BaseVLM):
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         enable_thinking: bool = False,
+        reasoning_effort: str = "medium",  # "none", "low", "medium", "high"
         **kwargs,
     ):
         super().__init__(model, api_key, enable_thinking=enable_thinking, **kwargs)
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         if not self.api_key:
             raise ValueError("OpenAI API key required. Set OPENAI_API_KEY env var or pass api_key.")
+
+        self.reasoning_effort = reasoning_effort
 
         try:
             from openai import OpenAI
@@ -462,6 +471,11 @@ class OpenAIVLM(BaseVLM):
 
         self.client = OpenAI(**client_kwargs)
 
+        # Check if model supports reasoning
+        self._supports_reasoning = any(
+            self.model.startswith(prefix) for prefix in self.REASONING_MODELS
+        )
+
     def generate(
         self,
         prompt: str,
@@ -470,20 +484,80 @@ class OpenAIVLM(BaseVLM):
         max_tokens: int = 1024,
         temperature: float = 0.7,
     ) -> str:
+        # Use reasoning API for thinking mode with supported models
+        if self.enable_thinking and self._supports_reasoning:
+            return self._generate_with_reasoning(prompt, images, system_prompt, max_tokens)
+        else:
+            return self._generate_chat(prompt, images, system_prompt, max_tokens, temperature)
+
+    def _generate_with_reasoning(
+        self,
+        prompt: str,
+        images: Optional[List[Any]] = None,
+        system_prompt: Optional[str] = None,
+        max_tokens: int = 1024,
+    ) -> str:
+        """Generate using the responses API with reasoning effort."""
+        try:
+            # Build input with images if present
+            if images:
+                # For responses API with images, build content list
+                input_content = []
+                for img in images:
+                    if img is not None:
+                        img_b64 = prepare_image(img)
+                        input_content.append(
+                            {
+                                "type": "input_image",
+                                "image_url": f"data:image/png;base64,{img_b64}",
+                            }
+                        )
+                input_content.append({"type": "input_text", "text": prompt})
+
+                # Add system prompt as instructions if provided
+                instructions = system_prompt if system_prompt else None
+
+                response = self.client.responses.create(
+                    model=self.model,
+                    input=input_content,
+                    instructions=instructions,
+                    reasoning={"effort": self.reasoning_effort},
+                    max_output_tokens=max_tokens,
+                )
+            else:
+                # Text-only input
+                full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+
+                response = self.client.responses.create(
+                    model=self.model,
+                    input=full_prompt,
+                    reasoning={"effort": self.reasoning_effort},
+                    max_output_tokens=max_tokens,
+                )
+
+            # Extract text from response
+            return (
+                response.output_text.strip() if hasattr(response, "output_text") else str(response)
+            )
+
+        except Exception as e:
+            print(f"[OpenAI Reasoning] API error: {e}")
+            # Fallback to chat API
+            return self._generate_chat(prompt, images, system_prompt, max_tokens, 0.7)
+
+    def _generate_chat(
+        self,
+        prompt: str,
+        images: Optional[List[Any]] = None,
+        system_prompt: Optional[str] = None,
+        max_tokens: int = 1024,
+        temperature: float = 0.7,
+    ) -> str:
+        """Generate using the standard chat completions API."""
         messages = []
 
-        # System message (enhanced with thinking prompt if enabled)
-        effective_system = system_prompt or ""
-        if self.enable_thinking:
-            thinking_prefix = (
-                "You are a careful and methodical assistant. "
-                "Before providing your final answer, think through the problem step by step. "
-                "Show your reasoning process, then provide your final answer.\n\n"
-            )
-            effective_system = thinking_prefix + effective_system
-
-        if effective_system:
-            messages.append({"role": "system", "content": effective_system})
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
 
         # User message with images
         user_content = []
@@ -499,21 +573,25 @@ class OpenAIVLM(BaseVLM):
                         }
                     )
 
-        # Add thinking prompt suffix if enabled
-        effective_prompt = prompt
-        if self.enable_thinking:
-            effective_prompt = prompt + "\n\nThink step by step before answering."
-
-        user_content.append({"type": "text", "text": effective_prompt})
+        user_content.append({"type": "text", "text": prompt})
         messages.append({"role": "user", "content": user_content})
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
+            # GPT-5 series uses max_completion_tokens, older models use max_tokens
+            if self._supports_reasoning:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    max_completion_tokens=max_tokens,
+                    temperature=temperature,
+                )
+            else:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
             return response.choices[0].message.content.strip()
         except Exception as e:
             error_str = str(e)
@@ -547,28 +625,23 @@ class OpenAIVLM(BaseVLM):
 
 class GeminiVLM(BaseVLM):
     """
-    Google Gemini Vision models (Gemini 3 Pro, Gemini 2.0 Flash, etc.)
+    Google Gemini Vision models (Gemini 3 Pro, Gemini 2.5 Flash, etc.)
 
     Requires: google-genai>=0.1.0
     API Key: GOOGLE_API_KEY environment variable
 
-    Thinking mode: Uses native thinking models (gemini-2.5-flash-thinking) when available,
-    or falls back to prompt-based chain-of-thought reasoning.
+    Thinking mode:
+    - Uses thinking_config with thinking_budget (0 to disable, -1 for dynamic, or token count)
+    - See: https://ai.google.dev/gemini-api/docs/thinking
     """
-
-    # Mapping from base model to thinking model
-    THINKING_MODELS = {
-        "gemini-2.5-flash": "gemini-2.5-flash-thinking-exp-01-21",
-        "gemini-2.5-pro": "gemini-2.5-pro-exp-03-25",
-        "gemini-3-flash-preview": "gemini-3-flash-preview",  # May have native thinking
-        "gemini-3-pro-preview": "gemini-3-pro-preview",
-    }
 
     def __init__(
         self,
         model: str = "gemini-3-pro-preview",
         api_key: Optional[str] = None,
         enable_thinking: bool = False,
+        thinking_level: str = "medium",  # For Gemini 3: "low", "medium", "high", "minimal" (Flash only)
+        thinking_budget: int = 1024,  # For Gemini 2.5: 0 to disable, -1 for dynamic
         **kwargs,
     ):
         super().__init__(model, api_key, enable_thinking=enable_thinking, **kwargs)
@@ -576,8 +649,14 @@ class GeminiVLM(BaseVLM):
         if not self.api_key:
             raise ValueError("Google API key required. Set GOOGLE_API_KEY env var or pass api_key.")
 
+        self.thinking_level = thinking_level
+        self.thinking_budget = thinking_budget
+
         try:
             from google import genai
+            from google.genai import types
+
+            self._types = types
         except ImportError:
             raise ImportError(
                 "google-genai package required. Install with: pip install google-genai"
@@ -586,20 +665,8 @@ class GeminiVLM(BaseVLM):
         self.client = genai.Client(api_key=self.api_key)
         self._genai = genai
 
-        # If thinking enabled, try to use a thinking model variant
-        if self.enable_thinking:
-            if model in self.THINKING_MODELS:
-                self.effective_model = self.THINKING_MODELS[model]
-            elif "thinking" not in model.lower():
-                # Fall back to prompt-based thinking
-                self.effective_model = model
-                self._use_prompt_thinking = True
-            else:
-                self.effective_model = model
-                self._use_prompt_thinking = False
-        else:
-            self.effective_model = model
-            self._use_prompt_thinking = False
+        # Determine if this is a Gemini 3 or 2.5 model
+        self._is_gemini3 = "gemini-3" in model.lower()
 
     def generate(
         self,
@@ -611,18 +678,9 @@ class GeminiVLM(BaseVLM):
     ) -> str:
         contents = []
 
-        # Add system prompt as first text (enhanced with thinking if using prompt-based)
-        effective_system = system_prompt or ""
-        if self.enable_thinking and getattr(self, "_use_prompt_thinking", False):
-            thinking_prefix = (
-                "You are a careful and methodical assistant. "
-                "Before providing your final answer, think through the problem step by step. "
-                "Show your reasoning process, then provide your final answer.\n\n"
-            )
-            effective_system = thinking_prefix + effective_system
-
-        if effective_system:
-            contents.append(effective_system + "\n\n")
+        # Add system prompt as first text
+        if system_prompt:
+            contents.append(system_prompt + "\n\n")
 
         # Add images
         if images:
@@ -640,30 +698,45 @@ class GeminiVLM(BaseVLM):
                     )
                     contents.append(img)
 
-        # Add prompt (enhanced with thinking suffix if using prompt-based)
-        effective_prompt = prompt
-        if self.enable_thinking and getattr(self, "_use_prompt_thinking", False):
-            effective_prompt = prompt + "\n\nThink step by step before answering."
-
-        contents.append(effective_prompt)
+        # Add prompt
+        contents.append(prompt)
 
         try:
+            # Build config with thinking settings if enabled
+            if self.enable_thinking:
+                # google-genai SDK uses thinking_budget for all models
+                # Set to -1 for dynamic thinking (model decides)
+                thinking_config = self._types.ThinkingConfig(
+                    thinking_budget=self.thinking_budget,
+                    include_thoughts=True,
+                )
+
+                config = self._types.GenerateContentConfig(
+                    max_output_tokens=max_tokens,
+                    temperature=temperature,
+                    thinking_config=thinking_config,
+                )
+            else:
+                config = self._types.GenerateContentConfig(
+                    max_output_tokens=max_tokens,
+                    temperature=temperature,
+                )
+
             response = self.client.models.generate_content(
-                model=self.effective_model,
+                model=self.model,
                 contents=contents,
-                config={
-                    "max_output_tokens": max_tokens,
-                    "temperature": temperature,
-                },
+                config=config,
             )
 
-            # Handle native thinking models (return second part which is the answer)
-            if "thinking" in self.effective_model.lower():
-                # Thinking models return [thinking_part, answer_part]
-                if len(response.candidates[0].content.parts) > 1:
-                    return response.candidates[0].content.parts[1].text.strip()
+            # When thinking is enabled, find the non-thought part for the answer
+            if self.enable_thinking and hasattr(response, "candidates"):
+                for part in response.candidates[0].content.parts:
+                    if hasattr(part, "thought") and not part.thought:
+                        return part.text.strip() if part.text else ""
+                    elif not hasattr(part, "thought") and hasattr(part, "text"):
+                        return part.text.strip()
 
-            return response.text.strip()
+            return response.text.strip() if hasattr(response, "text") else str(response)
         except Exception as e:
             print(f"[Gemini] API error: {e}")
             return ""
@@ -870,10 +943,16 @@ class UnifiedVLM:
         # With thinking mode enabled
         vlm = UnifiedVLM(provider="qwen", model="qwen3-vl-235b-a22b-instruct", enable_thinking=True)
 
+        # OpenAI with reasoning effort
+        vlm = UnifiedVLM(provider="openai", model="gpt-5.1", enable_thinking=True, reasoning_effort="medium")
+
+        # Gemini with thinking budget
+        vlm = UnifiedVLM(provider="gemini", model="gemini-2.5-flash", enable_thinking=True, thinking_budget=1024)
+
     Thinking Mode Support:
         - Qwen: Native support via enable_thinking parameter in API
-        - Gemini: Uses thinking model variants (e.g., gemini-2.5-flash-thinking)
-        - OpenAI/GPT: Uses prompt-based chain-of-thought reasoning
+        - Gemini: Uses thinking_config with thinking_budget (0 to disable, -1 for dynamic, or token count)
+        - OpenAI/GPT: Uses responses API with reasoning={"effort": ...} (GPT-5 series, o1, o3 only)
     """
 
     PROVIDERS = {
@@ -897,7 +976,7 @@ class UnifiedVLM:
         "gemini": "gemini-3-flash-preview",
         "google": "gemini-3-flash-preview",
         # Use the model that works in your test file
-        "qwen": "qwen3-vl-flash", # "qwen3-vl-flash",
+        "qwen": "qwen3-vl-flash",  # "qwen3-vl-flash",
         "alibaba": "qwen3-vl-flash",
         "dashscope": "qwen3-vl-flash",
         "kimi": "kimi-k2-0905-preview",
@@ -923,7 +1002,9 @@ class UnifiedVLM:
         model = model or self.DEFAULT_MODELS[provider]
         vlm_class = self.PROVIDERS[provider]
 
-        self._vlm = vlm_class(model=model, api_key=api_key, enable_thinking=enable_thinking, **kwargs)
+        self._vlm = vlm_class(
+            model=model, api_key=api_key, enable_thinking=enable_thinking, **kwargs
+        )
         self.provider = provider
         self.model = model
         self.enable_thinking = enable_thinking
@@ -978,12 +1059,11 @@ def get_available_models() -> Dict[str, List[str]]:
             "gemini-2.5-pro",
         ],
         "qwen": [
-
             "qwen3-vl-235b-a22b-instruct",
             "qwen3-vl-flash",
             "qwen3-vl-plus",
             "qwen-vl-max",
-            "qwen-vl-plus"
+            "qwen-vl-plus",
         ],
         "kimi": [
             "kimi-k2-0905-preview",
